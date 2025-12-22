@@ -198,7 +198,7 @@ export default function App() {
   }, [stopAndDispose]);
 
   const onParamEdit = (v: number, setter: (v: number) => void) => {
-    state.pushHistory(); // 変更前に今の状態を保存
+    state.pushHistory();
     handleUserChange();
     setter(v);
     setTimeout(playOnce, 10);
@@ -235,6 +235,7 @@ export default function App() {
     setIsExporting(true);
     const beatTime = 60 / s.bpm / 4;
     let maxDur = 0;
+
     s.notes.forEach((n: Note) => {
       const parts = n.time.split(":").map(Number);
       const d =
@@ -244,42 +245,84 @@ export default function App() {
         s.delayFeedback * 5;
       if (d > maxDur) maxDur = d;
     });
+
     try {
       const offlineBuffer = await Tone.Offline(() => {
         const polyCount = s.notes.length;
+
         s.notes.forEach((note) => {
           const parts = note.time.split(":").map(Number);
           const startTime = (parts[1] * 4 + parts[2]) * beatTime;
           const totalDuration = note.width * beatTime;
-          const { source } = createSynthChain(
+
+          const { source, filter } = createSynthChain(
             s,
             Tone.getDestination(),
             polyCount
           );
+
+          if (s.filterEnvAmount !== 0) {
+            filter.detune.setValueAtTime(0, startTime);
+            filter.detune.linearRampToValueAtTime(
+              s.filterEnvAmount,
+              startTime + s.attack
+            );
+            filter.detune.linearRampToValueAtTime(
+              0,
+              startTime + s.attack + s.decay
+            );
+          }
+
           if (s.repeatSpeed > 0) {
             const interval = 1 / s.repeatSpeed;
             let t = 0;
+            let count = 0;
             while (t < totalDuration) {
               const triggerTime = startTime + t;
               const singleNoteDur = Math.min(interval * 0.9, totalDuration - t);
-              if (s.oscillatorType === "noise")
+
+              if (s.oscillatorType === "noise") {
                 source.triggerAttackRelease(singleNoteDur, triggerTime);
-              else
+              } else {
+                const baseFreq = Tone.Frequency(note.pitch).toFrequency();
+                const arpFreq =
+                  baseFreq * Math.pow(2, (s.arpAmount * count) / 12);
+
+                source.detune.setValueAtTime(0, triggerTime);
                 source.triggerAttackRelease(
-                  note.pitch,
+                  arpFreq,
                   singleNoteDur,
                   triggerTime
                 );
+
+                if (s.pitchAmount !== 0) {
+                  source.detune.linearRampToValueAtTime(
+                    s.pitchAmount * 100,
+                    triggerTime + s.pitchTime
+                  );
+                }
+              }
               t += interval;
+              count++;
             }
           } else {
-            if (s.oscillatorType === "noise")
+            if (s.oscillatorType === "noise") {
               source.triggerAttackRelease(totalDuration, startTime);
-            else
+            } else {
+              source.detune.setValueAtTime(0, startTime);
               source.triggerAttackRelease(note.pitch, totalDuration, startTime);
+
+              if (s.pitchAmount !== 0) {
+                source.detune.linearRampToValueAtTime(
+                  s.pitchAmount * 100,
+                  startTime + s.pitchTime
+                );
+              }
+            }
           }
         });
       }, maxDur + 0.5);
+
       const finalBuffer = offlineBuffer.get();
       if (!finalBuffer) return;
       const wav = audioBufferToWav(finalBuffer);

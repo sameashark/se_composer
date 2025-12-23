@@ -11,6 +11,8 @@ export const PianoRoll: React.FC = () => {
 
   // ダブルタップ判定用のRef
   const lastTapRef = useRef<number>(0);
+  // 誤操作防止用のロックRef
+  const interactionLockRef = useRef<boolean>(false);
 
   const GRID_X = 50;
   const GRID_Y = 25;
@@ -18,9 +20,7 @@ export const PianoRoll: React.FC = () => {
   const CANVAS_HEIGHT = 250;
   const SCALE = ["B3", "C4", "D4", "E4", "F4", "G4", "A4", "B4", "C5", "D5"];
 
-  // 座標取得ロジックの改善 (nativeEvent.offsetを使用)
   const getLocalPos = (e: any) => {
-    // タッチイベントの場合
     if (e.touches && e.touches.length > 0) {
       const rect = canvasRef.current?.getBoundingClientRect();
       if (!rect) return { x: 0, y: 0 };
@@ -29,7 +29,6 @@ export const PianoRoll: React.FC = () => {
         y: e.touches[0].clientY - rect.top,
       };
     }
-    // マウスイベントの場合 (nativeEvent.offsetX/Y が最も正確)
     if (e.nativeEvent) {
       return {
         x: e.nativeEvent.offsetX,
@@ -44,16 +43,17 @@ export const PianoRoll: React.FC = () => {
     return parts[1] * 4 + parts[2];
   };
 
-  // 共通のアクションハンドラ（マウス・タッチ共通）
   const handleActionStart = (
     x: number,
     y: number,
     isTouch: boolean = false
   ) => {
+    // ロック中は操作を受け付けない（削除直後の再配置防止）
+    if (interactionLockRef.current) return;
+
     const col = Math.floor(x / GRID_X);
     const row = Math.floor(y / GRID_Y);
 
-    // 範囲外クリック防止
     if (row < 0 || row >= SCALE.length) return;
 
     const pitch = SCALE[SCALE.length - 1 - row];
@@ -68,10 +68,17 @@ export const PianoRoll: React.FC = () => {
       if (isTouch) {
         const now = Date.now();
         if (now - lastTapRef.current < 300) {
-          // 300ms以内の連打
+          // 300ms以内の連打＝削除実行
           pushHistory();
           removeNote(clickedNote.id);
           lastTapRef.current = 0;
+
+          // 削除直後に「新規配置」が暴発しないよう、短時間ロックをかける
+          interactionLockRef.current = true;
+          setTimeout(() => {
+            interactionLockRef.current = false;
+          }, 350); // ダブルタップ判定時間より少し長めに設定
+
           return;
         }
         lastTapRef.current = now;
@@ -90,7 +97,6 @@ export const PianoRoll: React.FC = () => {
         width: 1,
         velocity: 0.8,
       });
-      // 新規作成時もリサイズモードに入るとUXが良いが、今回は仕様維持
     }
   };
 
@@ -99,8 +105,7 @@ export const PianoRoll: React.FC = () => {
     const note = notes.find((n) => n.id === activeId);
     if (note) {
       const startX = timeToCol(note.time) * GRID_X;
-      // 最小幅1を維持しつつ長さを計算
-      const newWidth = Math.max(1, Math.round((x - startX) / GRID_X)); // 端数処理をroundに変更
+      const newWidth = Math.max(1, Math.round((x - startX) / GRID_X));
       if (newWidth !== note.width) {
         updateNote(activeId, { width: newWidth });
       }
@@ -114,17 +119,13 @@ export const PianoRoll: React.FC = () => {
 
   // --- Mouse Events ---
   const handleMouseDown = (e: React.MouseEvent) => {
-    e.preventDefault(); // タッチデバイスでの二重発火防止等のため
+    e.preventDefault();
     const { x, y } = getLocalPos(e);
     handleActionStart(x, y, false);
   };
 
   const handleMouseMove = (e: MouseEvent) => {
-    // window event listenerから呼ばれるため、座標計算に注意が必要だが
-    // ドラッグ中のリサイズ処理は canvas 基準の座標が必要
     if (!isResizing) return;
-
-    // Canvas基準の座標を再計算
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const x = e.clientX - rect.left;
@@ -137,14 +138,13 @@ export const PianoRoll: React.FC = () => {
 
   // --- Touch Events ---
   const handleTouchStart = (e: React.TouchEvent) => {
-    // スクロール防止
-    // e.preventDefault(); // ここでpreventするとinput range等が使いにくくなる場合があるがCanvas内ならOK
+    // e.preventDefault(); // スクロールは許可しつつ、別途タッチアクション制御
     const { x, y } = getLocalPos(e);
     handleActionStart(x, y, true);
   };
 
   const handleTouchMove = (e: React.TouchEvent) => {
-    e.preventDefault(); // キャンバス内のスクロール防止
+    e.preventDefault();
     const { x } = getLocalPos(e);
     handleActionMove(x);
   };
@@ -153,7 +153,6 @@ export const PianoRoll: React.FC = () => {
     handleActionEnd();
   };
 
-  // イベントリスナー登録（マウス移動・アップはWindow全体で捕捉）
   useEffect(() => {
     window.addEventListener("mousemove", handleMouseMove);
     window.addEventListener("mouseup", handleMouseUp);
@@ -163,7 +162,6 @@ export const PianoRoll: React.FC = () => {
     };
   }, [isResizing, activeId, notes]);
 
-  // 描画処理
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -173,7 +171,7 @@ export const PianoRoll: React.FC = () => {
     ctx.fillStyle = "#0f172a";
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-    // Grid描画
+    // Grid
     ctx.strokeStyle = "#1e293b";
     ctx.lineWidth = 1;
     for (let x = 0; x <= CANVAS_WIDTH; x += GRID_X) {
@@ -189,15 +187,12 @@ export const PianoRoll: React.FC = () => {
       ctx.stroke();
     }
 
-    // Note描画
+    // Notes
     notes.forEach((note) => {
       const col = timeToCol(note.time);
       const row = SCALE.length - 1 - SCALE.indexOf(note.pitch);
 
-      // 修正: 透過色に変更して重なりを可視化
       ctx.fillStyle = "rgba(59, 130, 246, 0.75)";
-
-      // 枠線をつけて視認性アップ
       ctx.strokeStyle = "#60a5fa";
       ctx.lineWidth = 1;
 
@@ -218,7 +213,7 @@ export const PianoRoll: React.FC = () => {
         background: "#0f172a",
         borderRadius: "8px",
         overflow: "hidden",
-        touchAction: "none", // ブラウザ標準のタッチアクションを無効化
+        touchAction: "none",
       }}
     >
       <div
@@ -241,7 +236,7 @@ export const PianoRoll: React.FC = () => {
               alignItems: "center",
               justifyContent: "center",
               borderBottom: "1px solid #0f172a",
-              boxSizing: "border-box", // レイアウト崩れ防止
+              boxSizing: "border-box",
             }}
           >
             {s}
@@ -254,7 +249,7 @@ export const PianoRoll: React.FC = () => {
         height={CANVAS_HEIGHT}
         onMouseDown={handleMouseDown}
         onContextMenu={(e) => {
-          e.preventDefault(); // 右クリックメニュー抑制
+          e.preventDefault();
           const { x, y } = getLocalPos(e);
           const col = Math.floor(x / GRID_X);
           const row = Math.floor(y / GRID_Y);
@@ -270,7 +265,6 @@ export const PianoRoll: React.FC = () => {
             removeNote(note.id);
           }
         }}
-        // タッチイベント追加
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}

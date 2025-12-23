@@ -37,6 +37,11 @@ export default function App() {
   } | null>(null);
   const toastTimerRef = useRef<number | null>(null);
 
+  // タイトル設定
+  useEffect(() => {
+    document.title = "SE-Composer";
+  }, []);
+
   const showToast = useCallback(
     (msg: string, type: "success" | "error" = "success") => {
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
@@ -64,7 +69,6 @@ export default function App() {
     if (presetName !== "") setPresetName("");
   }, [presetName]);
 
-  // シンセチェーン生成
   const createSynthChain = (
     s: any,
     destination: any,
@@ -129,7 +133,6 @@ export default function App() {
         polyCount
       );
 
-      // Filter Envelope
       if (s.filterEnvAmount !== 0) {
         filter.detune.setValueAtTime(0, startTime);
         filter.detune.linearRampToValueAtTime(
@@ -142,7 +145,6 @@ export default function App() {
         );
       }
 
-      // Play Note / Arpeggio
       if (s.repeatSpeed > 0) {
         const interval = 1 / s.repeatSpeed;
         let t = 0;
@@ -180,7 +182,6 @@ export default function App() {
         }
       }
 
-      // Cleanup
       const stopSelf = () => {
         source.volume.rampTo(-Infinity, 0.1);
         setTimeout(() => {
@@ -210,20 +211,15 @@ export default function App() {
     );
   }, [stopAndDispose]);
 
-  // --- UI Operation Logic ---
-
-  // 1. パラメータ変更開始 (History保存)
   const onParamStart = () => {
     state.pushHistory();
     handleUserChange();
   };
 
-  // 2. パラメータ変更中 (State更新のみ、History/Playなし)
   const onParamChange = (v: number, setter: (v: number) => void) => {
     setter(v);
   };
 
-  // 3. パラメータ変更終了 (Play実行)
   const onParamEnd = () => {
     setTimeout(playOnce, 10);
   };
@@ -548,86 +544,164 @@ export default function App() {
     e.target.value = "";
   };
 
+  // 強化されたプリセットロジック
   const applyPreset = (type: string) => {
     state.pushHistory();
     handleUserChange();
     let p: any = { ...DEFAULT_STATE };
     const r = (min: number, max: number) => Math.random() * (max - min) + min;
+
+    // ノートが空の場合はプレビュー用ノートを配置
+    const ensureNote = (pitch: string, width: number = 1) => {
+      if (state.notes.length === 0)
+        state.addNote({
+          id: "preview",
+          time: "0:0:0",
+          pitch: pitch,
+          width: width,
+          velocity: 0.8,
+        });
+    };
+
     switch (type) {
       case "laser":
+        // より攻撃的で幅のあるレーザー音
         p = {
           ...p,
-          oscillatorType: "sawtooth",
-          pitchAmount: r(35, -10),
-          pitchTime: r(0.12, 0.25),
-          filterCutoff: r(4000, 8000),
-          filterEnvAmount: r(2000, 5000),
+          oscillatorType: Math.random() > 0.5 ? "sawtooth" : "square",
+          pitchAmount: r(24, 48) * (Math.random() > 0.5 ? 1 : -1), // 上昇or下降
+          pitchTime: r(0.1, 0.4),
+          filterCutoff: r(1000, 8000),
+          filterEnvAmount: r(1000, 6000),
+          decay: r(0.1, 0.4),
+          sustain: r(0, 0.2),
+          release: r(0.1, 0.5),
+          delayFeedback: r(0.1, 0.4),
         };
+        ensureNote("C5", 2);
         break;
+
       case "bomb":
+        // ノイズを活用した爆発音
         p = {
           ...p,
           oscillatorType: "noise",
-          decay: r(0.5, 1.5),
+          decay: r(0.5, 2.0),
           sustain: 0,
-          release: r(1.0, 2.5),
-          filterCutoff: r(200, 500),
+          release: r(1.0, 3.0),
+          filterCutoff: r(300, 1000),
+          filterEnvAmount: r(500, 2000),
+          attack: 0.01,
+          masterVolume: -3,
         };
+        ensureNote("C2", 4);
         break;
-      case "positive":
+
+      case "coin":
+        // キラキラした高音、短い減衰
         p = {
           ...p,
-          oscillatorType: "triangle",
-          pitchAmount: r(12, 36),
-          pitchTime: r(0.03, 0.1),
+          oscillatorType: Math.random() > 0.5 ? "sine" : "triangle",
+          pitchAmount: 0,
+          attack: 0.005,
+          decay: r(0.1, 0.3),
+          sustain: 0,
+          release: r(0.1, 0.4),
+          arpAmount: Math.random() > 0.5 ? 0 : 12, // オクターブアルペジオが入ることも
+          repeatSpeed: Math.random() > 0.7 ? r(15, 25) : 0,
+          filterCutoff: 8000,
         };
+        ensureNote("C6", 1);
         break;
-      case "negative":
+
+      case "powerup":
+        // 上昇感のあるアルペジオやピッチシフト
         p = {
           ...p,
           oscillatorType: "square",
-          pitchAmount: r(-36, -12),
-          pitchTime: r(0.3, 0.6),
+          attack: r(0.01, 0.1),
+          decay: r(0.2, 0.5),
+          sustain: 0.4,
+          release: 0.5,
+          pitchAmount: r(12, 24),
+          pitchTime: 0.3,
+          repeatSpeed: r(10, 30),
+          arpAmount: r(1, 5), // マイナー/メジャー系の上昇
+          filterCutoff: r(2000, 5000),
+          delayFeedback: 0.3,
         };
+        ensureNote("C4", 3);
         break;
-      case "hit":
+
+      case "damage":
+        // 不協和音や急降下
         p = {
           ...p,
-          oscillatorType: "square",
-          attack: 0.001,
-          decay: 0.05,
-          sustain: 0,
-          release: 0.1,
+          oscillatorType: Math.random() > 0.5 ? "sawtooth" : "square",
+          pitchAmount: r(-24, -12),
+          pitchTime: r(0.05, 0.2),
+          attack: 0.01,
+          decay: 0.2,
+          sustain: 0.1,
+          release: 0.2,
+          repeatSpeed: r(20, 50),
+          arpAmount: r(-6, -1), // 不協和音的なズレ
+          filterCutoff: r(1000, 3000),
         };
+        ensureNote("C3", 1);
         break;
+
       case "jump":
         p = {
           ...p,
-          oscillatorType: "sine",
-          pitchAmount: r(12, 48),
-          pitchTime: 0.1,
+          oscillatorType: Math.random() > 0.5 ? "sine" : "square",
+          pitchAmount: r(12, 36),
+          pitchTime: r(0.1, 0.3),
+          attack: 0.01,
+          decay: 0.2,
+          sustain: 0.1,
+          release: 0.2,
         };
+        ensureNote("C4", 1);
         break;
-      default:
+
+      case "random":
+        // 完全ランダム（カオスだが音楽的な範囲に収める）
+        const types: OscillatorType[] = [
+          "sine",
+          "square",
+          "sawtooth",
+          "triangle",
+          "noise",
+        ];
         p = {
           ...p,
-          oscillatorType: ["sine", "square", "sawtooth", "triangle", "noise"][
-            Math.floor(Math.random() * 5)
-          ],
-          attack: r(0.01, 0.5),
-          release: r(0.1, 2.0),
+          oscillatorType: types[Math.floor(Math.random() * types.length)],
+          attack: r(0.001, 0.5),
+          decay: r(0.05, 1.0),
+          sustain: r(0, 0.8),
+          release: r(0.05, 2.0),
+
+          pitchAmount: r(-48, 48),
+          pitchTime: r(0.01, 1.0),
+
+          filterCutoff: r(100, 8000),
+          filterEnvAmount: r(0, 5000),
+
+          repeatSpeed: Math.random() > 0.6 ? r(0, 40) : 0, // 40%の確率でアルペジオ
+          arpAmount: Math.floor(r(-12, 12)),
+
+          delayFeedback: Math.random() > 0.5 ? r(0, 0.6) : 0,
         };
+        ensureNote("C4", 2);
+        break;
+
+      default:
+        break;
     }
-    p.masterVolume = -6;
+
+    p.masterVolume = -6; // 音量は統一
     state.setAllParams(p);
-    if (state.notes.length === 0)
-      state.addNote({
-        id: "preview",
-        time: "0:0:0",
-        pitch: "C5",
-        width: 2,
-        velocity: 0.8,
-      });
     setTimeout(playOnce, 50);
   };
 
@@ -795,7 +869,8 @@ export default function App() {
 
       <div style={flexCenterS}>
         <div style={inputGroupS}>
-          {["laser", "bomb", "positive", "negative", "hit", "jump"].map((t) => (
+          {/* プリセットボタンの入れ替えと追加 */}
+          {["laser", "coin", "jump", "powerup", "damage", "bomb"].map((t) => (
             <button key={t} onClick={() => applyPreset(t)} style={sampleBtnS}>
               {t.toUpperCase()}
             </button>
@@ -815,7 +890,7 @@ export default function App() {
               state.pushHistory();
               handleUserChange();
               state.setOscillatorType(e.target.value as any);
-              setTimeout(playOnce, 50); // 修正: 波形変更時も自動再生
+              setTimeout(playOnce, 50);
             }}
             style={selectS}
           >
@@ -834,7 +909,6 @@ export default function App() {
             type="number"
             value={state.bpm}
             onChange={(e) => {
-              // BPMもスライダーではないが数値入力なので一回完結とみなす
               state.pushHistory();
               handleUserChange();
               state.setBpm(Number(e.target.value));
@@ -1013,7 +1087,6 @@ export default function App() {
   );
 }
 
-// Panel修正: イベントを分離
 const Panel = ({
   title,
   val,
@@ -1043,9 +1116,9 @@ const Panel = ({
         max={max}
         step={step}
         value={val}
-        onPointerDown={onStart} // タッチ・マウス共通の開始
-        onChange={(e) => onChange(Number(e.target.value))} // 値更新のみ
-        onPointerUp={onEnd} // タッチ・マウス共通の終了
+        onPointerDown={onStart}
+        onChange={(e) => onChange(Number(e.target.value))}
+        onPointerUp={onEnd}
         style={{ flex: 1, accentColor: "#3b82f6" }}
       />
       <input
@@ -1054,7 +1127,6 @@ const Panel = ({
         max={max}
         step={step}
         value={val}
-        // 数値入力の場合は従来通り
         onChange={(e) => {
           onStart();
           onChange(Number(e.target.value));

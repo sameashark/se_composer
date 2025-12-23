@@ -19,7 +19,7 @@ import {
   Redo2,
   AlertTriangle,
 } from "lucide-react";
-import { useStore, OscillatorType, Preset, DEFAULT_STATE, Note } from "./store"; // Noteを追加
+import { useStore, OscillatorType, Preset, DEFAULT_STATE, Note } from "./store";
 import { PianoRoll } from "./PianoRoll";
 
 export default function App() {
@@ -64,6 +64,7 @@ export default function App() {
     if (presetName !== "") setPresetName("");
   }, [presetName]);
 
+  // シンセチェーン生成
   const createSynthChain = (
     s: any,
     destination: any,
@@ -71,16 +72,21 @@ export default function App() {
   ) => {
     const polyCompensation = Math.log10(Math.max(1, polyCount)) * 15;
     const finalVolume = s.masterVolume - polyCompensation;
+
     const limiter = new Tone.Limiter(-1).connect(destination);
+
     const filter = new Tone.Filter(s.filterCutoff, "lowpass").connect(limiter);
     filter.Q.value = 2;
+
     const delay = new Tone.FeedbackDelay("8n", s.delayFeedback).connect(filter);
+
     const commonEnvelope = {
       attack: s.attack,
       decay: s.decay,
       sustain: s.sustain,
       release: s.release,
     };
+
     let source: any;
     if (s.oscillatorType === "noise") {
       source = new Tone.NoiseSynth({
@@ -94,6 +100,7 @@ export default function App() {
       }).connect(delay);
     }
     source.volume.value = finalVolume;
+
     return { source, filter, delay, limiter };
   };
 
@@ -121,6 +128,8 @@ export default function App() {
         Tone.getDestination(),
         polyCount
       );
+
+      // Filter Envelope
       if (s.filterEnvAmount !== 0) {
         filter.detune.setValueAtTime(0, startTime);
         filter.detune.linearRampToValueAtTime(
@@ -132,6 +141,8 @@ export default function App() {
           startTime + s.attack + s.decay
         );
       }
+
+      // Play Note / Arpeggio
       if (s.repeatSpeed > 0) {
         const interval = 1 / s.repeatSpeed;
         let t = 0;
@@ -168,6 +179,8 @@ export default function App() {
             );
         }
       }
+
+      // Cleanup
       const stopSelf = () => {
         source.volume.rampTo(-Infinity, 0.1);
         setTimeout(() => {
@@ -197,10 +210,21 @@ export default function App() {
     );
   }, [stopAndDispose]);
 
-  const onParamEdit = (v: number, setter: (v: number) => void) => {
+  // --- UI Operation Logic ---
+
+  // 1. パラメータ変更開始 (History保存)
+  const onParamStart = () => {
     state.pushHistory();
     handleUserChange();
+  };
+
+  // 2. パラメータ変更中 (State更新のみ、History/Playなし)
+  const onParamChange = (v: number, setter: (v: number) => void) => {
     setter(v);
+  };
+
+  // 3. パラメータ変更終了 (Play実行)
+  const onParamEnd = () => {
     setTimeout(playOnce, 10);
   };
 
@@ -247,7 +271,7 @@ export default function App() {
     });
 
     try {
-      const offlineBuffer = await Tone.Offline(() => {
+      const offlineBuffer = await Tone.Offline((context) => {
         const polyCount = s.notes.length;
 
         s.notes.forEach((note) => {
@@ -257,7 +281,7 @@ export default function App() {
 
           const { source, filter } = createSynthChain(
             s,
-            Tone.getDestination(),
+            context.destination,
             polyCount
           );
 
@@ -324,16 +348,22 @@ export default function App() {
       }, maxDur + 0.5);
 
       const finalBuffer = offlineBuffer.get();
-      if (!finalBuffer) return;
+      if (!finalBuffer) throw new Error("Buffer generation failed");
+
       const wav = audioBufferToWav(finalBuffer);
       const blob = new Blob([wav], { type: "audio/wav" });
       const url = URL.createObjectURL(blob);
+
       const a = document.createElement("a");
       a.download = `se_${Date.now()}.wav`;
       a.href = url;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
+
       showToast("DOWNLOAD STARTED", "success");
     } catch (e) {
+      console.error(e);
       showToast("DOWNLOAD FAILED", "error");
     } finally {
       setIsExporting(false);
@@ -785,6 +815,7 @@ export default function App() {
               state.pushHistory();
               handleUserChange();
               state.setOscillatorType(e.target.value as any);
+              setTimeout(playOnce, 50); // 修正: 波形変更時も自動再生
             }}
             style={selectS}
           >
@@ -803,6 +834,7 @@ export default function App() {
             type="number"
             value={state.bpm}
             onChange={(e) => {
+              // BPMもスライダーではないが数値入力なので一回完結とみなす
               state.pushHistory();
               handleUserChange();
               state.setBpm(Number(e.target.value));
@@ -826,9 +858,11 @@ export default function App() {
             min={0}
             max={2}
             step={0.01}
+            onStart={onParamStart}
             onChange={(v: any) =>
-              onParamEdit(v, (val) => state.setEnvelope("attack", val))
+              onParamChange(v, (val) => state.setEnvelope("attack", val))
             }
+            onEnd={onParamEnd}
           />
           <Panel
             title="DECAY"
@@ -836,9 +870,11 @@ export default function App() {
             min={0.01}
             max={2}
             step={0.01}
+            onStart={onParamStart}
             onChange={(v: any) =>
-              onParamEdit(v, (val) => state.setEnvelope("decay", val))
+              onParamChange(v, (val) => state.setEnvelope("decay", val))
             }
+            onEnd={onParamEnd}
           />
           <Panel
             title="SUSTAIN"
@@ -846,9 +882,11 @@ export default function App() {
             min={0}
             max={1}
             step={0.01}
+            onStart={onParamStart}
             onChange={(v: any) =>
-              onParamEdit(v, (val) => state.setEnvelope("sustain", val))
+              onParamChange(v, (val) => state.setEnvelope("sustain", val))
             }
+            onEnd={onParamEnd}
           />
           <Panel
             title="RELEASE"
@@ -856,9 +894,11 @@ export default function App() {
             min={0.01}
             max={3}
             step={0.01}
+            onStart={onParamStart}
             onChange={(v: any) =>
-              onParamEdit(v, (val) => state.setEnvelope("release", val))
+              onParamChange(v, (val) => state.setEnvelope("release", val))
             }
+            onEnd={onParamEnd}
           />
         </div>
         <div style={categoryBoxS}>
@@ -871,9 +911,11 @@ export default function App() {
             min={0}
             max={100}
             step={0.1}
+            onStart={onParamStart}
             onChange={(v: any) =>
-              onParamEdit(v, (val) => state.setEffect("repeatSpeed", val))
+              onParamChange(v, (val) => state.setEffect("repeatSpeed", val))
             }
+            onEnd={onParamEnd}
           />
           <Panel
             title="ARP AMOUNT (semi)"
@@ -881,18 +923,24 @@ export default function App() {
             min={-12}
             max={12}
             step={1}
+            onStart={onParamStart}
             onChange={(v: any) =>
-              onParamEdit(v, (val) => state.setPitchEffect("arpAmount", val))
+              onParamChange(v, (val) => state.setPitchEffect("arpAmount", val))
             }
+            onEnd={onParamEnd}
           />
           <Panel
             title="PITCH AMOUNT"
             val={state.pitchAmount}
             min={-48}
             max={48}
+            onStart={onParamStart}
             onChange={(v: any) =>
-              onParamEdit(v, (val) => state.setPitchEffect("pitchAmount", val))
+              onParamChange(v, (val) =>
+                state.setPitchEffect("pitchAmount", val)
+              )
             }
+            onEnd={onParamEnd}
           />
           <Panel
             title="PITCH TIME"
@@ -900,9 +948,11 @@ export default function App() {
             min={0.01}
             max={1.5}
             step={0.01}
+            onStart={onParamStart}
             onChange={(v: any) =>
-              onParamEdit(v, (val) => state.setPitchEffect("pitchTime", val))
+              onParamChange(v, (val) => state.setPitchEffect("pitchTime", val))
             }
+            onEnd={onParamEnd}
           />
         </div>
         <div style={categoryBoxS}>
@@ -915,9 +965,11 @@ export default function App() {
             min={100}
             max={10000}
             step={10}
+            onStart={onParamStart}
             onChange={(v: any) =>
-              onParamEdit(v, (val) => state.setEffect("filterCutoff", val))
+              onParamChange(v, (val) => state.setEffect("filterCutoff", val))
             }
+            onEnd={onParamEnd}
           />
           <Panel
             title="FILTER ENV"
@@ -925,9 +977,11 @@ export default function App() {
             min={0}
             max={10000}
             step={10}
+            onStart={onParamStart}
             onChange={(v: any) =>
-              onParamEdit(v, (val) => state.setEffect("filterEnvAmount", val))
+              onParamChange(v, (val) => state.setEffect("filterEnvAmount", val))
             }
+            onEnd={onParamEnd}
           />
           <Panel
             title="DELAY FEEDBACK"
@@ -935,9 +989,11 @@ export default function App() {
             min={0}
             max={0.9}
             step={0.01}
+            onStart={onParamStart}
             onChange={(v: any) =>
-              onParamEdit(v, (val) => state.setEffect("delayFeedback", val))
+              onParamChange(v, (val) => state.setEffect("delayFeedback", val))
             }
+            onEnd={onParamEnd}
           />
           <Panel
             title="MASTER VOL (dB)"
@@ -945,9 +1001,11 @@ export default function App() {
             min={-60}
             max={0}
             step={1}
+            onStart={onParamStart}
             onChange={(v: any) =>
-              onParamEdit(v, (val) => state.setEffect("masterVolume", val))
+              onParamChange(v, (val) => state.setEffect("masterVolume", val))
             }
+            onEnd={onParamEnd}
           />
         </div>
       </div>
@@ -955,7 +1013,17 @@ export default function App() {
   );
 }
 
-const Panel = ({ title, val, min, max, step = 1, onChange }: any) => (
+// Panel修正: イベントを分離
+const Panel = ({
+  title,
+  val,
+  min,
+  max,
+  step = 1,
+  onStart,
+  onChange,
+  onEnd,
+}: any) => (
   <div style={panelS}>
     <div
       style={{
@@ -975,7 +1043,9 @@ const Panel = ({ title, val, min, max, step = 1, onChange }: any) => (
         max={max}
         step={step}
         value={val}
-        onChange={(e) => onChange(Number(e.target.value))}
+        onPointerDown={onStart} // タッチ・マウス共通の開始
+        onChange={(e) => onChange(Number(e.target.value))} // 値更新のみ
+        onPointerUp={onEnd} // タッチ・マウス共通の終了
         style={{ flex: 1, accentColor: "#3b82f6" }}
       />
       <input
@@ -984,7 +1054,12 @@ const Panel = ({ title, val, min, max, step = 1, onChange }: any) => (
         max={max}
         step={step}
         value={val}
-        onChange={(e) => onChange(Number(e.target.value))}
+        // 数値入力の場合は従来通り
+        onChange={(e) => {
+          onStart();
+          onChange(Number(e.target.value));
+          onEnd();
+        }}
         style={numInputS}
       />
     </div>

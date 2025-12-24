@@ -39,6 +39,11 @@ interface HistorySnapshot {
     masterVolume: number;
     repeatSpeed: number;
     arpAmount: number;
+    // New Params
+    lfoRate: number;
+    lfoDepth: number;
+    lfoTarget: "pitch" | "filter";
+    detune: number;
   };
   notes: Note[];
 }
@@ -58,6 +63,11 @@ export const DEFAULT_STATE = {
   masterVolume: -6,
   repeatSpeed: 0,
   arpAmount: 0,
+  // New Params
+  lfoRate: 5,        // Hz
+  lfoDepth: 0,       // 0-100
+  lfoTarget: "pitch" as "pitch" | "filter",
+  detune: 0,         // cents
 };
 
 interface SongState {
@@ -76,9 +86,16 @@ interface SongState {
   masterVolume: number;
   repeatSpeed: number;
   arpAmount: number;
+  // New Params
+  lfoRate: number;
+  lfoDepth: number;
+  lfoTarget: "pitch" | "filter";
+  detune: number;
+
   history: Preset[];
   past: HistorySnapshot[];
   future: HistorySnapshot[];
+
   setBpm: (bpm: number) => void;
   setOscillatorType: (type: OscillatorType) => void;
   setEnvelope: (
@@ -98,6 +115,12 @@ interface SongState {
       | "repeatSpeed",
     value: number
   ) => void;
+  // New Setter
+  setModulation: (
+    key: "lfoRate" | "lfoDepth" | "lfoTarget" | "detune",
+    val: number | string
+  ) => void;
+
   setAllParams: (params: Partial<SongState>) => void;
   addNote: (note: Note) => void;
   updateNote: (id: string, newNote: Partial<Note>) => void;
@@ -121,6 +144,8 @@ export const useStore = create<SongState>((set, get) => ({
   setEnvelope: (key, val) => set({ [key]: val } as any),
   setPitchEffect: (key, val) => set({ [key]: val } as any),
   setEffect: (key, value) => set({ [key]: value } as any),
+  setModulation: (key, val) => set({ [key]: val } as any),
+  
   setAllParams: (params) => set((state) => ({ ...state, ...params })),
 
   addNote: (note) =>
@@ -165,6 +190,10 @@ export const useStore = create<SongState>((set, get) => ({
         masterVolume: s.masterVolume,
         repeatSpeed: s.repeatSpeed,
         arpAmount: s.arpAmount,
+        lfoRate: s.lfoRate,
+        lfoDepth: s.lfoDepth,
+        lfoTarget: s.lfoTarget,
+        detune: s.detune,
       },
       notes: JSON.parse(JSON.stringify(s.notes)),
     };

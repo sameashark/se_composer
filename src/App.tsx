@@ -18,6 +18,7 @@ import {
   Undo2,
   Redo2,
   AlertTriangle,
+  Zap,
 } from "lucide-react";
 import { useStore, OscillatorType, Preset, DEFAULT_STATE, Note } from "./store";
 import { PianoRoll } from "./PianoRoll";
@@ -69,6 +70,7 @@ export default function App() {
     if (presetName !== "") setPresetName("");
   }, [presetName]);
 
+  // 音声処理チェーン作成（LFO/Detune対応）
   const createSynthChain = (
     s: any,
     destination: any,
@@ -76,21 +78,21 @@ export default function App() {
   ) => {
     const polyCompensation = Math.log10(Math.max(1, polyCount)) * 15;
     const finalVolume = s.masterVolume - polyCompensation;
-
+    
     const limiter = new Tone.Limiter(-1).connect(destination);
-
+    
     const filter = new Tone.Filter(s.filterCutoff, "lowpass").connect(limiter);
     filter.Q.value = 2;
-
+    
     const delay = new Tone.FeedbackDelay("8n", s.delayFeedback).connect(filter);
-
+    
     const commonEnvelope = {
       attack: s.attack,
       decay: s.decay,
       sustain: s.sustain,
       release: s.release,
     };
-
+    
     let source: any;
     if (s.oscillatorType === "noise") {
       source = new Tone.NoiseSynth({
@@ -102,10 +104,33 @@ export default function App() {
         oscillator: { type: s.oscillatorType as any },
         envelope: commonEnvelope,
       }).connect(delay);
+      
+      // Detune (NoiseSynthには存在しないプロパティのためここで設定)
+      if (source.detune) {
+        source.detune.value = s.detune;
+      }
     }
     source.volume.value = finalVolume;
 
-    return { source, filter, delay, limiter };
+    // LFO Implementation
+    let lfo: any = null;
+    if (s.lfoDepth > 0) {
+      // Depthのスケーリング: 0-100 を適切な範囲にマップ
+      const isPitch = s.lfoTarget === "pitch";
+      const minVal = isPitch ? -s.lfoDepth * 10 : -s.lfoDepth * 20; // Pitch: +/- 1000cents, Filter: +/- 2000Hz
+      const maxVal = isPitch ? s.lfoDepth * 10 : s.lfoDepth * 20;
+      
+      lfo = new Tone.LFO(s.lfoRate, minVal, maxVal).start();
+      
+      if (isPitch && s.oscillatorType !== "noise") {
+         // Noiseにはピッチがないため除外
+         lfo.connect(source.detune);
+      } else if (!isPitch) {
+         lfo.connect(filter.frequency);
+      }
+    }
+    
+    return { source, filter, delay, limiter, lfo };
   };
 
   const playOnce = useCallback(async () => {
@@ -127,7 +152,7 @@ export default function App() {
       const endTime = colIndex * beatTime + totalDuration + s.release;
       if (endTime > lastEndTime) lastEndTime = endTime;
 
-      const { source, filter, delay, limiter } = createSynthChain(
+      const { source, filter, delay, limiter, lfo } = createSynthChain(
         s,
         Tone.getDestination(),
         polyCount
@@ -157,11 +182,11 @@ export default function App() {
           } else {
             const baseFreq = Tone.Frequency(note.pitch).toFrequency();
             const arpFreq = baseFreq * Math.pow(2, (s.arpAmount * count) / 12);
-            source.detune.setValueAtTime(0, triggerTime);
+            source.detune.setValueAtTime(s.detune, triggerTime); // Detune再適用
             source.triggerAttackRelease(arpFreq, singleNoteDur, triggerTime);
             if (s.pitchAmount !== 0)
               source.detune.linearRampToValueAtTime(
-                s.pitchAmount * 100,
+                s.detune + s.pitchAmount * 100,
                 triggerTime + s.pitchTime
               );
           }
@@ -172,11 +197,11 @@ export default function App() {
         if (s.oscillatorType === "noise")
           source.triggerAttackRelease(totalDuration, startTime);
         else {
-          source.detune.setValueAtTime(0, startTime);
+          source.detune.setValueAtTime(s.detune, startTime);
           source.triggerAttackRelease(note.pitch, totalDuration, startTime);
           if (s.pitchAmount !== 0)
             source.detune.linearRampToValueAtTime(
-              s.pitchAmount * 100,
+              s.detune + s.pitchAmount * 100,
               startTime + s.pitchTime
             );
         }
@@ -185,9 +210,9 @@ export default function App() {
       const stopSelf = () => {
         source.volume.rampTo(-Infinity, 0.1);
         setTimeout(() => {
-          [source, delay, filter, limiter].forEach((n) => {
+          [source, delay, filter, limiter, lfo].forEach((n) => {
             try {
-              n.dispose();
+              n?.dispose();
             } catch (e) {}
           });
         }, 200);
@@ -255,7 +280,7 @@ export default function App() {
     setIsExporting(true);
     const beatTime = 60 / s.bpm / 4;
     let maxDur = 0;
-
+    
     s.notes.forEach((n: Note) => {
       const parts = n.time.split(":").map(Number);
       const d =
@@ -269,13 +294,13 @@ export default function App() {
     try {
       const offlineBuffer = await Tone.Offline((context) => {
         const polyCount = s.notes.length;
-
+        
         s.notes.forEach((note) => {
           const parts = note.time.split(":").map(Number);
           const startTime = (parts[1] * 4 + parts[2]) * beatTime;
           const totalDuration = note.width * beatTime;
-
-          const { source, filter } = createSynthChain(
+          
+          const { source, filter, lfo } = createSynthChain(
             s,
             context.destination,
             polyCount
@@ -300,24 +325,19 @@ export default function App() {
             while (t < totalDuration) {
               const triggerTime = startTime + t;
               const singleNoteDur = Math.min(interval * 0.9, totalDuration - t);
-
+              
               if (s.oscillatorType === "noise") {
                 source.triggerAttackRelease(singleNoteDur, triggerTime);
               } else {
                 const baseFreq = Tone.Frequency(note.pitch).toFrequency();
-                const arpFreq =
-                  baseFreq * Math.pow(2, (s.arpAmount * count) / 12);
-
-                source.detune.setValueAtTime(0, triggerTime);
-                source.triggerAttackRelease(
-                  arpFreq,
-                  singleNoteDur,
-                  triggerTime
-                );
-
+                const arpFreq = baseFreq * Math.pow(2, (s.arpAmount * count) / 12);
+                
+                source.detune.setValueAtTime(s.detune, triggerTime);
+                source.triggerAttackRelease(arpFreq, singleNoteDur, triggerTime);
+                
                 if (s.pitchAmount !== 0) {
                   source.detune.linearRampToValueAtTime(
-                    s.pitchAmount * 100,
+                    s.detune + s.pitchAmount * 100,
                     triggerTime + s.pitchTime
                   );
                 }
@@ -329,12 +349,12 @@ export default function App() {
             if (s.oscillatorType === "noise") {
               source.triggerAttackRelease(totalDuration, startTime);
             } else {
-              source.detune.setValueAtTime(0, startTime);
+              source.detune.setValueAtTime(s.detune, startTime);
               source.triggerAttackRelease(note.pitch, totalDuration, startTime);
-
+              
               if (s.pitchAmount !== 0) {
                 source.detune.linearRampToValueAtTime(
-                  s.pitchAmount * 100,
+                  s.detune + s.pitchAmount * 100,
                   startTime + s.pitchTime
                 );
               }
@@ -345,18 +365,18 @@ export default function App() {
 
       const finalBuffer = offlineBuffer.get();
       if (!finalBuffer) throw new Error("Buffer generation failed");
-
+      
       const wav = audioBufferToWav(finalBuffer);
       const blob = new Blob([wav], { type: "audio/wav" });
       const url = URL.createObjectURL(blob);
-
+      
       const a = document.createElement("a");
       a.download = `se_${Date.now()}.wav`;
       a.href = url;
-      document.body.appendChild(a);
+      document.body.appendChild(a); 
       a.click();
       document.body.removeChild(a);
-
+      
       showToast("DOWNLOAD STARTED", "success");
     } catch (e) {
       console.error(e);
@@ -425,6 +445,10 @@ export default function App() {
         masterVolume: s.masterVolume,
         repeatSpeed: s.repeatSpeed,
         arpAmount: s.arpAmount,
+        lfoRate: s.lfoRate,
+        lfoDepth: s.lfoDepth,
+        lfoTarget: s.lfoTarget,
+        detune: s.detune,
       },
       notes: [...s.notes],
     };
@@ -500,6 +524,10 @@ export default function App() {
           masterVolume: s.masterVolume,
           repeatSpeed: s.repeatSpeed,
           arpAmount: s.arpAmount,
+          lfoRate: s.lfoRate,
+          lfoDepth: s.lfoDepth,
+          lfoTarget: s.lfoTarget,
+          detune: s.detune,
         },
         notes: s.notes,
       },
@@ -544,16 +572,14 @@ export default function App() {
     e.target.value = "";
   };
 
-  // 強化されたプリセットロジック
   const applyPreset = (type: string) => {
     state.pushHistory();
     handleUserChange();
     let p: any = { ...DEFAULT_STATE };
     const r = (min: number, max: number) => Math.random() * (max - min) + min;
 
-    // ノートが空の場合はプレビュー用ノートを配置
     const ensureNote = (pitch: string, width: number = 1) => {
-      if (state.notes.length === 0)
+       if (state.notes.length === 0)
         state.addNote({
           id: "preview",
           time: "0:0:0",
@@ -561,15 +587,14 @@ export default function App() {
           width: width,
           velocity: 0.8,
         });
-    };
+    }
 
     switch (type) {
       case "laser":
-        // より攻撃的で幅のあるレーザー音
         p = {
           ...p,
           oscillatorType: Math.random() > 0.5 ? "sawtooth" : "square",
-          pitchAmount: r(24, 48) * (Math.random() > 0.5 ? 1 : -1), // 上昇or下降
+          pitchAmount: r(24, 48) * (Math.random() > 0.5 ? 1 : -1),
           pitchTime: r(0.1, 0.4),
           filterCutoff: r(1000, 8000),
           filterEnvAmount: r(1000, 6000),
@@ -577,12 +602,15 @@ export default function App() {
           sustain: r(0, 0.2),
           release: r(0.1, 0.5),
           delayFeedback: r(0.1, 0.4),
+          // LFOでうねりを追加
+          lfoRate: r(5, 15),
+          lfoDepth: Math.random() > 0.5 ? r(5, 20) : 0,
+          lfoTarget: "filter",
         };
         ensureNote("C5", 2);
         break;
-
+        
       case "bomb":
-        // ノイズを活用した爆発音
         p = {
           ...p,
           oscillatorType: "noise",
@@ -593,29 +621,31 @@ export default function App() {
           filterEnvAmount: r(500, 2000),
           attack: 0.01,
           masterVolume: -3,
+          lfoRate: r(0.1, 2),
+          lfoDepth: r(10, 50),
+          lfoTarget: "filter",
         };
         ensureNote("C2", 4);
         break;
-
+        
       case "coin":
-        // キラキラした高音、短い減衰
         p = {
           ...p,
           oscillatorType: Math.random() > 0.5 ? "sine" : "triangle",
-          pitchAmount: 0,
+          pitchAmount: 0, 
           attack: 0.005,
           decay: r(0.1, 0.3),
           sustain: 0,
           release: r(0.1, 0.4),
-          arpAmount: Math.random() > 0.5 ? 0 : 12, // オクターブアルペジオが入ることも
+          arpAmount: Math.random() > 0.5 ? 0 : 12,
           repeatSpeed: Math.random() > 0.7 ? r(15, 25) : 0,
           filterCutoff: 8000,
+          detune: r(0, 10), // 微妙な厚み
         };
         ensureNote("C6", 1);
         break;
 
       case "powerup":
-        // 上昇感のあるアルペジオやピッチシフト
         p = {
           ...p,
           oscillatorType: "square",
@@ -626,15 +656,17 @@ export default function App() {
           pitchAmount: r(12, 24),
           pitchTime: 0.3,
           repeatSpeed: r(10, 30),
-          arpAmount: r(1, 5), // マイナー/メジャー系の上昇
+          arpAmount: r(1, 5),
           filterCutoff: r(2000, 5000),
           delayFeedback: 0.3,
+          lfoRate: r(2, 8),
+          lfoDepth: r(5, 15),
+          lfoTarget: "pitch", // 揺れる上昇音
         };
         ensureNote("C4", 3);
         break;
 
       case "damage":
-        // 不協和音や急降下
         p = {
           ...p,
           oscillatorType: Math.random() > 0.5 ? "sawtooth" : "square",
@@ -645,8 +677,11 @@ export default function App() {
           sustain: 0.1,
           release: 0.2,
           repeatSpeed: r(20, 50),
-          arpAmount: r(-6, -1), // 不協和音的なズレ
+          arpAmount: r(-6, -1),
           filterCutoff: r(1000, 3000),
+          lfoRate: r(10, 20),
+          lfoDepth: r(20, 50),
+          lfoTarget: "pitch", // 激しいビブラートで痛みを表現
         };
         ensureNote("C3", 1);
         break;
@@ -666,14 +701,7 @@ export default function App() {
         break;
 
       case "random":
-        // 完全ランダム（カオスだが音楽的な範囲に収める）
-        const types: OscillatorType[] = [
-          "sine",
-          "square",
-          "sawtooth",
-          "triangle",
-          "noise",
-        ];
+        const types: OscillatorType[] = ["sine", "square", "sawtooth", "triangle", "noise"];
         p = {
           ...p,
           oscillatorType: types[Math.floor(Math.random() * types.length)],
@@ -681,26 +709,32 @@ export default function App() {
           decay: r(0.05, 1.0),
           sustain: r(0, 0.8),
           release: r(0.05, 2.0),
-
+          
           pitchAmount: r(-48, 48),
           pitchTime: r(0.01, 1.0),
-
+          
           filterCutoff: r(100, 8000),
           filterEnvAmount: r(0, 5000),
-
-          repeatSpeed: Math.random() > 0.6 ? r(0, 40) : 0, // 40%の確率でアルペジオ
+          
+          repeatSpeed: Math.random() > 0.6 ? r(0, 40) : 0, 
           arpAmount: Math.floor(r(-12, 12)),
-
+          
           delayFeedback: Math.random() > 0.5 ? r(0, 0.6) : 0,
+          
+          // LFO & Detune Random
+          lfoRate: r(0.1, 20),
+          lfoDepth: Math.random() > 0.5 ? r(0, 80) : 0,
+          lfoTarget: Math.random() > 0.5 ? "pitch" : "filter",
+          detune: Math.random() > 0.5 ? r(0, 50) : 0,
         };
         ensureNote("C4", 2);
         break;
-
+        
       default:
         break;
     }
-
-    p.masterVolume = -6; // 音量は統一
+    
+    p.masterVolume = -6;
     state.setAllParams(p);
     setTimeout(playOnce, 50);
   };
@@ -869,7 +903,6 @@ export default function App() {
 
       <div style={flexCenterS}>
         <div style={inputGroupS}>
-          {/* プリセットボタンの入れ替えと追加 */}
           {["laser", "coin", "jump", "powerup", "damage", "bomb"].map((t) => (
             <button key={t} onClick={() => applyPreset(t)} style={sampleBtnS}>
               {t.toUpperCase()}
@@ -1010,9 +1043,7 @@ export default function App() {
             max={48}
             onStart={onParamStart}
             onChange={(v: any) =>
-              onParamChange(v, (val) =>
-                state.setPitchEffect("pitchAmount", val)
-              )
+              onParamChange(v, (val) => state.setPitchEffect("pitchAmount", val))
             }
             onEnd={onParamEnd}
           />
@@ -1029,6 +1060,63 @@ export default function App() {
             onEnd={onParamEnd}
           />
         </div>
+        
+        {/* New Category: MODULATION */}
+        <div style={categoryBoxS}>
+          <div style={categoryTitleS}>
+            <Zap size={14} /> MODULATION (LFO)
+          </div>
+          <Panel
+            title="LFO RATE (Hz)"
+            val={state.lfoRate}
+            min={0.1}
+            max={20}
+            step={0.1}
+            onStart={onParamStart}
+            onChange={(v: any) =>
+              onParamChange(v, (val) => state.setModulation("lfoRate", val))
+            }
+            onEnd={onParamEnd}
+          />
+          <Panel
+            title="LFO DEPTH"
+            val={state.lfoDepth}
+            min={0}
+            max={100}
+            step={1}
+            onStart={onParamStart}
+            onChange={(v: any) =>
+              onParamChange(v, (val) => state.setModulation("lfoDepth", val))
+            }
+            onEnd={onParamEnd}
+          />
+          <div style={{ ...panelS, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0' }}>
+            <div style={{ fontSize: "10px", fontWeight: "bold", color: "#64748b", textTransform: "uppercase" }}>TARGET</div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+               <button 
+                 onClick={() => { onParamStart(); state.setModulation("lfoTarget", "pitch"); onParamEnd(); }}
+                 style={state.lfoTarget === "pitch" ? activeToggleS : toggleS}
+               >PITCH</button>
+               <button 
+                 onClick={() => { onParamStart(); state.setModulation("lfoTarget", "filter"); onParamEnd(); }}
+                 style={state.lfoTarget === "filter" ? activeToggleS : toggleS}
+               >FILTER</button>
+            </div>
+          </div>
+           <Panel
+            title="DETUNE (cents)"
+            val={state.detune}
+            min={0}
+            max={50}
+            step={1}
+            onStart={onParamStart}
+            onChange={(v: any) =>
+              onParamChange(v, (val) => state.setModulation("detune", val))
+            }
+            onEnd={onParamEnd}
+          />
+        </div>
+
         <div style={categoryBoxS}>
           <div style={categoryTitleS}>
             <Settings size={14} /> EFFECTS & MASTER
@@ -1087,16 +1175,7 @@ export default function App() {
   );
 }
 
-const Panel = ({
-  title,
-  val,
-  min,
-  max,
-  step = 1,
-  onStart,
-  onChange,
-  onEnd,
-}: any) => (
+const Panel = ({ title, val, min, max, step = 1, onStart, onChange, onEnd }: any) => (
   <div style={panelS}>
     <div
       style={{
@@ -1128,9 +1207,9 @@ const Panel = ({
         step={step}
         value={val}
         onChange={(e) => {
-          onStart();
-          onChange(Number(e.target.value));
-          onEnd();
+            if (onStart) onStart();
+            onChange(Number(e.target.value));
+            if (onEnd) onEnd();
         }}
         style={numInputS}
       />
@@ -1344,3 +1423,19 @@ const iconBtnS: any = {
   alignItems: "center",
 };
 const panelS: any = { textAlign: "left" };
+const toggleS: any = {
+  background: "#0f172a",
+  border: "1px solid #334155",
+  color: "#64748b",
+  fontSize: "10px",
+  padding: "2px 6px",
+  borderRadius: "4px",
+  cursor: "pointer",
+  fontWeight: "bold",
+};
+const activeToggleS: any = {
+  ...toggleS,
+  background: "#3b82f6",
+  color: "white",
+  borderColor: "#3b82f6",
+};

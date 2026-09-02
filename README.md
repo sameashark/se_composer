@@ -52,11 +52,6 @@ node cli/render.mjs '{"params":{"oscillatorType":"square","pitchAmount":24},"not
 
 プリセットJSONをプロジェクト側に置き、WAVはそこから生成する。
 
-```bash
-# ゲームのプロジェクト側で
-node C:/Users/tkosh/claude-project/se-composer/cli/render.mjs sounds/ -d public/se/ --normalize
-```
-
 `sounds/*.json` を資産としてコミットしておけば、WAVは何度でも作り直せる。UIで微調整したものは `JSON` ボタンで単体プリセットとして書き出せるので、そのまま `sounds/` に戻せる。
 
 ### Claude Code から

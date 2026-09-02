@@ -1,0 +1,24 @@
+{
+  "name": "laser",
+  "params": {
+    "bpm": 120,
+    "oscillatorType": "sawtooth",
+    "attack": 0.01,
+    "decay": 0.25,
+    "sustain": 0.1,
+    "release": 0.3,
+    "pitchAmount": -36,
+    "pitchTime": 0.25,
+    "arpAmount": 0,
+    "repeatSpeed": 0,
+    "detune": 0,
+    "lfoRate": 8,
+    "lfoDepth": 0,
+    "lfoTarget": "filter",
+    "filterCutoff": 4000,
+    "filterEnvAmount": 3000,
+    "delayFeedback": 0.2,
+    "masterVolume": -6
+  },
+  "notes": [{ "time": "0:0:0", "pitch": "C5", "width": 2, "velocity": 0.8 }]
+}

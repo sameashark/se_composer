@@ -1,0 +1,24 @@
+{
+  "name": "powerup",
+  "params": {
+    "bpm": 120,
+    "oscillatorType": "square",
+    "attack": 0.05,
+    "decay": 0.3,
+    "sustain": 0.4,
+    "release": 0.5,
+    "pitchAmount": 18,
+    "pitchTime": 0.3,
+    "arpAmount": 3,
+    "repeatSpeed": 20,
+    "detune": 0,
+    "lfoRate": 5,
+    "lfoDepth": 10,
+    "lfoTarget": "pitch",
+    "filterCutoff": 3500,
+    "filterEnvAmount": 0,
+    "delayFeedback": 0.3,
+    "masterVolume": -6
+  },
+  "notes": [{ "time": "0:0:0", "pitch": "C4", "width": 3, "velocity": 0.8 }]
+}

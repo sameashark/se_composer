@@ -1,237 +1,123 @@
-// @ts-nocheck
 import { create } from "zustand";
+import { DEFAULT_PARAMS, normalizePreset } from "./core/engine.js";
+import type { SeNote, SeParams } from "./core/engine.js";
 
-export interface Note {
-  id: string;
-  time: string;
-  pitch: string;
-  width: number;
-  velocity: number;
-}
+export type { SeNote, SeParams, OscillatorKind, LfoTarget } from "./core/engine.js";
+export { DEFAULT_PARAMS, OSCILLATOR_TYPES } from "./core/engine.js";
 
-export type OscillatorType =
-  | "sine"
-  | "square"
-  | "sawtooth"
-  | "triangle"
-  | "noise";
+const STORAGE_KEY = "se_composer_history";
+const HISTORY_LIMIT = 50;
 
-export interface Preset {
+export interface StoredPreset {
   version: number;
   name: string;
-  params: Record<string, any>;
-  notes: Note[];
+  params: SeParams;
+  notes: SeNote[];
 }
 
-interface HistorySnapshot {
-  params: {
-    bpm: number;
-    delayFeedback: number;
-    filterCutoff: number;
-    filterEnvAmount: number;
-    oscillatorType: OscillatorType;
-    attack: number;
-    decay: number;
-    sustain: number;
-    release: number;
-    pitchAmount: number;
-    pitchTime: number;
-    masterVolume: number;
-    repeatSpeed: number;
-    arpAmount: number;
-    // New Params
-    lfoRate: number;
-    lfoDepth: number;
-    lfoTarget: "pitch" | "filter";
-    detune: number;
-  };
-  notes: Note[];
+interface Snapshot {
+  params: SeParams;
+  notes: SeNote[];
 }
 
-export const DEFAULT_STATE = {
-  bpm: 120,
-  delayFeedback: 0.2,
-  filterCutoff: 2000,
-  filterEnvAmount: 0,
-  oscillatorType: "triangle" as OscillatorType,
-  attack: 0.01,
-  decay: 0.2,
-  sustain: 0.2,
-  release: 0.2,
-  pitchAmount: 0,
-  pitchTime: 0.1,
-  masterVolume: -6,
-  repeatSpeed: 0,
-  arpAmount: 0,
-  // New Params
-  lfoRate: 5,        // Hz
-  lfoDepth: 0,       // 0-100
-  lfoTarget: "pitch" as "pitch" | "filter",
-  detune: 0,         // cents
-};
+interface SongState extends Snapshot {
+  /** 保存済みプリセット（localStorage と同期） */
+  presets: StoredPreset[];
+  past: Snapshot[];
+  future: Snapshot[];
 
-interface SongState {
-  bpm: number;
-  notes: Note[];
-  delayFeedback: number;
-  filterCutoff: number;
-  filterEnvAmount: number;
-  oscillatorType: OscillatorType;
-  attack: number;
-  decay: number;
-  sustain: number;
-  release: number;
-  pitchAmount: number;
-  pitchTime: number;
-  masterVolume: number;
-  repeatSpeed: number;
-  arpAmount: number;
-  // New Params
-  lfoRate: number;
-  lfoDepth: number;
-  lfoTarget: "pitch" | "filter";
-  detune: number;
-
-  history: Preset[];
-  past: HistorySnapshot[];
-  future: HistorySnapshot[];
-
-  setBpm: (bpm: number) => void;
-  setOscillatorType: (type: OscillatorType) => void;
-  setEnvelope: (
-    key: "attack" | "decay" | "sustain" | "release",
-    val: number
-  ) => void;
-  setPitchEffect: (
-    key: "pitchAmount" | "pitchTime" | "arpAmount",
-    val: number
-  ) => void;
-  setEffect: (
-    key:
-      | "delayFeedback"
-      | "filterCutoff"
-      | "filterEnvAmount"
-      | "masterVolume"
-      | "repeatSpeed",
-    value: number
-  ) => void;
-  // New Setter
-  setModulation: (
-    key: "lfoRate" | "lfoDepth" | "lfoTarget" | "detune",
-    val: number | string
-  ) => void;
-
-  setAllParams: (params: Partial<SongState>) => void;
-  addNote: (note: Note) => void;
-  updateNote: (id: string, newNote: Partial<Note>) => void;
+  setParam: <K extends keyof SeParams>(key: K, value: SeParams[K]) => void;
+  setParams: (params: Partial<SeParams>) => void;
+  addNote: (note: SeNote) => void;
+  updateNote: (id: string, patch: Partial<SeNote>) => void;
   removeNote: (id: string) => void;
   clearNotes: () => void;
-  setHistory: (history: Preset[]) => void;
+  setNotes: (notes: SeNote[]) => void;
+
+  setPresets: (presets: StoredPreset[]) => void;
+  loadSnapshot: (snapshot: Snapshot) => void;
+
   pushHistory: () => void;
   undo: () => void;
   redo: () => void;
 }
 
+function readStoredPresets(): StoredPreset[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]");
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((p): p is StoredPreset => !!p && typeof p.name === "string")
+      .map((p) => {
+        const { params, notes } = normalizePreset(p);
+        return { version: 1, name: p.name, params, notes };
+      });
+  } catch {
+    return [];
+  }
+}
+
+const snapshotOf = (s: Snapshot): Snapshot => ({
+  params: { ...s.params },
+  notes: s.notes.map((n) => ({ ...n })),
+});
+
 export const useStore = create<SongState>((set, get) => ({
-  ...DEFAULT_STATE,
+  params: { ...DEFAULT_PARAMS },
   notes: [],
-  history: JSON.parse(localStorage.getItem("se_composer_history") || "[]"),
+  presets: readStoredPresets(),
   past: [],
   future: [],
 
-  setBpm: (bpm) => set({ bpm }),
-  setOscillatorType: (type) => set({ oscillatorType: type }),
-  setEnvelope: (key, val) => set({ [key]: val } as any),
-  setPitchEffect: (key, val) => set({ [key]: val } as any),
-  setEffect: (key, value) => set({ [key]: value } as any),
-  setModulation: (key, val) => set({ [key]: val } as any),
-  
-  setAllParams: (params) => set((state) => ({ ...state, ...params })),
+  setParam: (key, value) => set((s) => ({ params: { ...s.params, [key]: value } })),
+  setParams: (params) => set((s) => ({ params: { ...s.params, ...params } })),
 
   addNote: (note) =>
-    set((state) => ({
-      notes: state.notes.some(
-        (n) => n.time === note.time && n.pitch === note.pitch
-      )
-        ? state.notes
-        : [...state.notes, note],
-    })),
-
-  updateNote: (id, newNote) =>
-    set((state) => ({
-      notes: state.notes.map((n) => (n.id === id ? { ...n, ...newNote } : n)),
-    })),
-
-  removeNote: (id) =>
-    set((state) => ({ notes: state.notes.filter((n) => n.id !== id) })),
-
+    set((s) =>
+      s.notes.some((n) => n.time === note.time && n.pitch === note.pitch)
+        ? s
+        : { notes: [...s.notes, note] }
+    ),
+  updateNote: (id, patch) =>
+    set((s) => ({ notes: s.notes.map((n) => (n.id === id ? { ...n, ...patch } : n)) })),
+  removeNote: (id) => set((s) => ({ notes: s.notes.filter((n) => n.id !== id) })),
   clearNotes: () => set({ notes: [] }),
+  setNotes: (notes) => set({ notes }),
 
-  setHistory: (history) => {
-    localStorage.setItem("se_composer_history", JSON.stringify(history));
-    set({ history });
+  setPresets: (presets) => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
+    set({ presets });
   },
 
-  createSnapshot: () => {
-    const s = get();
-    return {
-      params: {
-        bpm: s.bpm,
-        delayFeedback: s.delayFeedback,
-        filterCutoff: s.filterCutoff,
-        filterEnvAmount: s.filterEnvAmount,
-        oscillatorType: s.oscillatorType,
-        attack: s.attack,
-        decay: s.decay,
-        sustain: s.sustain,
-        release: s.release,
-        pitchAmount: s.pitchAmount,
-        pitchTime: s.pitchTime,
-        masterVolume: s.masterVolume,
-        repeatSpeed: s.repeatSpeed,
-        arpAmount: s.arpAmount,
-        lfoRate: s.lfoRate,
-        lfoDepth: s.lfoDepth,
-        lfoTarget: s.lfoTarget,
-        detune: s.detune,
-      },
-      notes: JSON.parse(JSON.stringify(s.notes)),
-    };
-  },
+  loadSnapshot: ({ params, notes }) =>
+    set({ params: { ...DEFAULT_PARAMS, ...params }, notes: notes.map((n) => ({ ...n })) }),
 
   pushHistory: () => {
     const s = get();
-    const snap = (s as any).createSnapshot();
+    const snap = snapshotOf(s);
     const last = s.past[s.past.length - 1];
     if (last && JSON.stringify(last) === JSON.stringify(snap)) return;
-    set({
-      past: [...s.past.slice(-49), snap],
-      future: [],
-    });
+    set({ past: [...s.past.slice(-(HISTORY_LIMIT - 1)), snap], future: [] });
   },
 
   undo: () => {
     const s = get();
-    if (s.past.length === 0) return;
-    const currentSnap = (s as any).createSnapshot();
     const prev = s.past[s.past.length - 1];
+    if (!prev) return;
     set({
-      ...prev.params,
-      notes: prev.notes,
+      ...prev,
       past: s.past.slice(0, -1),
-      future: [currentSnap, ...s.future].slice(0, 50),
+      future: [snapshotOf(s), ...s.future].slice(0, HISTORY_LIMIT),
     });
   },
 
   redo: () => {
     const s = get();
-    if (s.future.length === 0) return;
-    const currentSnap = (s as any).createSnapshot();
     const next = s.future[0];
+    if (!next) return;
     set({
-      ...next.params,
-      notes: next.notes,
-      past: [...s.past, currentSnap].slice(-50),
+      ...next,
+      past: [...s.past, snapshotOf(s)].slice(-HISTORY_LIMIT),
       future: s.future.slice(1),
     });
   },

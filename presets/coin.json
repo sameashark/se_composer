@@ -1,0 +1,24 @@
+{
+  "name": "coin",
+  "params": {
+    "bpm": 120,
+    "oscillatorType": "triangle",
+    "attack": 0.005,
+    "decay": 0.2,
+    "sustain": 0,
+    "release": 0.25,
+    "pitchAmount": 0,
+    "pitchTime": 0.1,
+    "arpAmount": 12,
+    "repeatSpeed": 16,
+    "detune": 5,
+    "lfoRate": 5,
+    "lfoDepth": 0,
+    "lfoTarget": "pitch",
+    "filterCutoff": 8000,
+    "filterEnvAmount": 0,
+    "delayFeedback": 0.1,
+    "masterVolume": -6
+  },
+  "notes": [{ "time": "0:0:0", "pitch": "C6", "width": 2, "velocity": 0.8 }]
+}

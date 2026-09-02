@@ -1,0 +1,24 @@
+{
+  "name": "bomb",
+  "params": {
+    "bpm": 120,
+    "oscillatorType": "noise",
+    "attack": 0.01,
+    "decay": 1.2,
+    "sustain": 0,
+    "release": 2.0,
+    "pitchAmount": 0,
+    "pitchTime": 0.1,
+    "arpAmount": 0,
+    "repeatSpeed": 0,
+    "detune": 0,
+    "lfoRate": 1,
+    "lfoDepth": 30,
+    "lfoTarget": "filter",
+    "filterCutoff": 600,
+    "filterEnvAmount": 1200,
+    "delayFeedback": 0.15,
+    "masterVolume": -3
+  },
+  "notes": [{ "time": "0:0:0", "pitch": "C2", "width": 4, "velocity": 1.0 }]
+}

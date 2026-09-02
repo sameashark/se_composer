@@ -1,0 +1,24 @@
+{
+  "name": "jump",
+  "params": {
+    "bpm": 120,
+    "oscillatorType": "square",
+    "attack": 0.01,
+    "decay": 0.2,
+    "sustain": 0.1,
+    "release": 0.2,
+    "pitchAmount": 24,
+    "pitchTime": 0.2,
+    "arpAmount": 0,
+    "repeatSpeed": 0,
+    "detune": 0,
+    "lfoRate": 5,
+    "lfoDepth": 0,
+    "lfoTarget": "pitch",
+    "filterCutoff": 5000,
+    "filterEnvAmount": 0,
+    "delayFeedback": 0.05,
+    "masterVolume": -6
+  },
+  "notes": [{ "time": "0:0:0", "pitch": "C4", "width": 1, "velocity": 0.8 }]
+}

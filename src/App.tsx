@@ -1,466 +1,159 @@
-// @ts-nocheck
-import React, { useState, useEffect, useRef, useCallback } from "react";
-import * as Tone from "tone";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AlertTriangle,
+  Download,
+  FileDown,
+  FileUp,
+  Music,
   Play,
+  Redo2,
+  Save,
+  Shuffle,
   Square,
   Trash2,
-  Clock,
-  Waves,
-  Shuffle,
-  Download,
-  Activity,
-  Settings,
-  Music,
-  Save,
-  FileUp,
-  FileDown,
   Undo2,
-  Redo2,
-  AlertTriangle,
-  Zap,
+  Waves,
 } from "lucide-react";
-import { useStore, OscillatorType, Preset, DEFAULT_STATE, Note } from "./store";
 import { PianoRoll } from "./PianoRoll";
+import { Params, OscillatorSelect } from "./components/Params";
+import { downloadBlob, play, renderWav } from "./audio/player";
+import type { Playback } from "./audio/player";
+import { normalizePreset } from "./core/engine.js";
+import type { SeNote, SeParams } from "./core/engine.js";
+import { makeSample, SAMPLE_KINDS } from "./randomize";
+import { DEFAULT_PARAMS, useStore } from "./store";
+import type { StoredPreset } from "./store";
+import * as S from "./ui/styles";
+
+interface Confirm {
+  message: string;
+  onConfirm: () => void;
+}
 
 export default function App() {
+  const params = useStore((s) => s.params);
+  const notes = useStore((s) => s.notes);
+  const presets = useStore((s) => s.presets);
+  const past = useStore((s) => s.past);
+  const future = useStore((s) => s.future);
+
+  const [presetName, setPresetName] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
-  const [presetName, setPresetName] = useState("");
+  const [toast, setToast] = useState<{ message: string; ok: boolean } | null>(null);
+  const [confirm, setConfirm] = useState<Confirm | null>(null);
 
-  const [toast, setToast] = useState<{
-    msg: string;
-    type: "success" | "error";
-  } | null>(null);
-  const [confirmData, setConfirmData] = useState<{
-    msg: string;
-    onConfirm: () => void;
-  } | null>(null);
+  const playbackRef = useRef<Playback | null>(null);
+  const stopTimerRef = useRef<number | null>(null);
   const toastTimerRef = useRef<number | null>(null);
 
-  // タイトル設定
-  useEffect(() => {
-    document.title = "SE-Composer";
+  const notify = useCallback((message: string, ok = true) => {
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    setToast({ message, ok });
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 2200);
   }, []);
 
-  const showToast = useCallback(
-    (msg: string, type: "success" | "error" = "success") => {
-      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
-      setToast({ msg, type });
-      toastTimerRef.current = window.setTimeout(() => setToast(null), 2000);
-    },
-    []
-  );
-
-  const state = useStore();
-  const stateRef = useRef(state);
-  useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
-
-  const activeEnginesRef = useRef<{ stop: () => void }[]>([]);
-
-  const stopAndDispose = useCallback(() => {
-    activeEnginesRef.current.forEach((engine) => engine.stop());
-    activeEnginesRef.current = [];
+  const stopPlayback = useCallback(() => {
+    playbackRef.current?.stop();
+    playbackRef.current = null;
+    if (stopTimerRef.current) window.clearTimeout(stopTimerRef.current);
     setIsPlaying(false);
   }, []);
 
-  const handleUserChange = useCallback(() => {
-    if (presetName !== "") setPresetName("");
-  }, [presetName]);
-
-  // 音声処理チェーン作成（LFO/Detune対応）
-  const createSynthChain = (
-    s: any,
-    destination: any,
-    polyCount: number = 1
-  ) => {
-    const polyCompensation = Math.log10(Math.max(1, polyCount)) * 15;
-    const finalVolume = s.masterVolume - polyCompensation;
-    
-    const limiter = new Tone.Limiter(-1).connect(destination);
-    
-    const filter = new Tone.Filter(s.filterCutoff, "lowpass").connect(limiter);
-    filter.Q.value = 2;
-    
-    const delay = new Tone.FeedbackDelay("8n", s.delayFeedback).connect(filter);
-    
-    const commonEnvelope = {
-      attack: s.attack,
-      decay: s.decay,
-      sustain: s.sustain,
-      release: s.release,
-    };
-    
-    let source: any;
-    if (s.oscillatorType === "noise") {
-      source = new Tone.NoiseSynth({
-        noise: { type: "brown" },
-        envelope: commonEnvelope,
-      }).connect(delay);
-    } else {
-      source = new Tone.Synth({
-        oscillator: { type: s.oscillatorType as any },
-        envelope: commonEnvelope,
-      }).connect(delay);
-      
-      // Detune (NoiseSynthには存在しないプロパティのためここで設定)
-      if (source.detune) {
-        source.detune.value = s.detune;
-      }
+  /** 常に store の最新値で鳴らす（スライダー操作直後でも取りこぼさない） */
+  const playCurrent = useCallback(async () => {
+    stopPlayback();
+    const { params: p, notes: n } = useStore.getState();
+    if (n.length === 0) return;
+    try {
+      const playback = await play(p, n);
+      playbackRef.current = playback;
+      setIsPlaying(true);
+      stopTimerRef.current = window.setTimeout(() => {
+        playbackRef.current = null;
+        setIsPlaying(false);
+      }, playback.durationMs + 120);
+    } catch (e) {
+      notify("再生できません", false);
     }
-    source.volume.value = finalVolume;
+  }, [notify, stopPlayback]);
 
-    // LFO Implementation
-    let lfo: any = null;
-    if (s.lfoDepth > 0) {
-      // Depthのスケーリング: 0-100 を適切な範囲にマップ
-      const isPitch = s.lfoTarget === "pitch";
-      const minVal = isPitch ? -s.lfoDepth * 10 : -s.lfoDepth * 20; // Pitch: +/- 1000cents, Filter: +/- 2000Hz
-      const maxVal = isPitch ? s.lfoDepth * 10 : s.lfoDepth * 20;
-      
-      lfo = new Tone.LFO(s.lfoRate, minVal, maxVal).start();
-      
-      if (isPitch && s.oscillatorType !== "noise") {
-         // Noiseにはピッチがないため除外
-         lfo.connect(source.detune);
-      } else if (!isPitch) {
-         lfo.connect(filter.frequency);
-      }
-    }
-    
-    return { source, filter, delay, limiter, lfo };
-  };
+  const beginEdit = useCallback(() => {
+    useStore.getState().pushHistory();
+    setPresetName("");
+  }, []);
 
-  const playOnce = useCallback(async () => {
-    await Tone.start();
-    stopAndDispose();
-    const s = stateRef.current;
-    if (s.notes.length === 0) return;
-    const now = Tone.now();
-    const beatTime = 60 / s.bpm / 4;
-    const engines: { stop: () => void }[] = [];
-    let lastEndTime = 0;
-    const polyCount = s.notes.length;
+  const endEdit = useCallback(() => {
+    void playCurrent();
+  }, [playCurrent]);
 
-    s.notes.forEach((note: Note) => {
-      const parts = note.time.split(":").map(Number);
-      const colIndex = parts[1] * 4 + parts[2];
-      const startTime = now + colIndex * beatTime + 0.05;
-      const totalDuration = note.width * beatTime;
-      const endTime = colIndex * beatTime + totalDuration + s.release;
-      if (endTime > lastEndTime) lastEndTime = endTime;
-
-      const { source, filter, delay, limiter, lfo } = createSynthChain(
-        s,
-        Tone.getDestination(),
-        polyCount
-      );
-
-      if (s.filterEnvAmount !== 0) {
-        filter.detune.setValueAtTime(0, startTime);
-        filter.detune.linearRampToValueAtTime(
-          s.filterEnvAmount,
-          startTime + s.attack
-        );
-        filter.detune.linearRampToValueAtTime(
-          0,
-          startTime + s.attack + s.decay
-        );
-      }
-
-      if (s.repeatSpeed > 0) {
-        const interval = 1 / s.repeatSpeed;
-        let t = 0;
-        let count = 0;
-        while (t < totalDuration) {
-          const triggerTime = startTime + t;
-          const singleNoteDur = Math.min(interval * 0.9, totalDuration - t);
-          if (s.oscillatorType === "noise") {
-            source.triggerAttackRelease(singleNoteDur, triggerTime);
-          } else {
-            const baseFreq = Tone.Frequency(note.pitch).toFrequency();
-            const arpFreq = baseFreq * Math.pow(2, (s.arpAmount * count) / 12);
-            source.detune.setValueAtTime(s.detune, triggerTime); // Detune再適用
-            source.triggerAttackRelease(arpFreq, singleNoteDur, triggerTime);
-            if (s.pitchAmount !== 0)
-              source.detune.linearRampToValueAtTime(
-                s.detune + s.pitchAmount * 100,
-                triggerTime + s.pitchTime
-              );
-          }
-          t += interval;
-          count++;
-        }
-      } else {
-        if (s.oscillatorType === "noise")
-          source.triggerAttackRelease(totalDuration, startTime);
-        else {
-          source.detune.setValueAtTime(s.detune, startTime);
-          source.triggerAttackRelease(note.pitch, totalDuration, startTime);
-          if (s.pitchAmount !== 0)
-            source.detune.linearRampToValueAtTime(
-              s.detune + s.pitchAmount * 100,
-              startTime + s.pitchTime
-            );
-        }
-      }
-
-      const stopSelf = () => {
-        source.volume.rampTo(-Infinity, 0.1);
-        setTimeout(() => {
-          [source, delay, filter, limiter, lfo].forEach((n) => {
-            try {
-              n?.dispose();
-            } catch (e) {}
-          });
-        }, 200);
-      };
-      const timeoutId = setTimeout(
-        stopSelf,
-        (endTime + s.delayFeedback * 10 + 1) * 1000
-      );
-      engines.push({
-        stop: () => {
-          clearTimeout(timeoutId);
-          stopSelf();
-        },
-      });
-    });
-    activeEnginesRef.current = engines;
-    setIsPlaying(true);
-    setTimeout(
-      () => setIsPlaying(false),
-      (lastEndTime + s.delayFeedback * 10 + 1) * 1000
-    );
-  }, [stopAndDispose]);
-
-  const onParamStart = () => {
-    state.pushHistory();
-    handleUserChange();
-  };
-
-  const onParamChange = (v: number, setter: (v: number) => void) => {
-    setter(v);
-  };
-
-  const onParamEnd = () => {
-    setTimeout(playOnce, 10);
-  };
-
-  const handleUndo = useCallback(() => {
-    state.undo();
-    setTimeout(playOnce, 50);
-  }, [playOnce, state]);
-
-  const handleRedo = useCallback(() => {
-    state.redo();
-    setTimeout(playOnce, 50);
-  }, [playOnce, state]);
+  const applySnapshot = useCallback(
+    (nextParams: SeParams, nextNotes?: SeNote[]) => {
+      const store = useStore.getState();
+      store.pushHistory();
+      store.setParams(nextParams);
+      if (nextNotes) store.setNotes(nextNotes);
+      void playCurrent();
+    },
+    [playCurrent]
+  );
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const meta = e.ctrlKey || e.metaKey;
+      const key = e.key.toLowerCase();
+      if (meta && key === "z") {
         e.preventDefault();
-        if (e.shiftKey) handleRedo();
-        else handleUndo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+        if (e.shiftKey) useStore.getState().redo();
+        else useStore.getState().undo();
+        void playCurrent();
+      } else if (meta && key === "y") {
         e.preventDefault();
-        handleRedo();
+        useStore.getState().redo();
+        void playCurrent();
+      } else if (key === " " && !(e.target instanceof HTMLInputElement)) {
+        e.preventDefault();
+        void playCurrent();
       }
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleUndo, handleRedo]);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [playCurrent]);
+
+  useEffect(() => () => stopPlayback(), [stopPlayback]);
+
+  const handleSample = (kind: (typeof SAMPLE_KINDS)[number] | "random") => {
+    const { params: nextParams, note } = makeSample(kind);
+    const store = useStore.getState();
+    applySnapshot(nextParams, store.notes.length === 0 ? [note] : store.notes);
+    setPresetName("");
+  };
 
   const handleDownload = async () => {
-    const s = stateRef.current;
-    if (s.notes.length === 0) return;
+    if (notes.length === 0) return;
     setIsExporting(true);
-    const beatTime = 60 / s.bpm / 4;
-    let maxDur = 0;
-    
-    s.notes.forEach((n: Note) => {
-      const parts = n.time.split(":").map(Number);
-      const d =
-        (parts[1] * 4 + parts[2]) * beatTime +
-        n.width * beatTime +
-        s.release +
-        s.delayFeedback * 5;
-      if (d > maxDur) maxDur = d;
-    });
-
     try {
-      const offlineBuffer = await Tone.Offline((context) => {
-        const polyCount = s.notes.length;
-        
-        s.notes.forEach((note) => {
-          const parts = note.time.split(":").map(Number);
-          const startTime = (parts[1] * 4 + parts[2]) * beatTime;
-          const totalDuration = note.width * beatTime;
-          
-          const { source, filter, lfo } = createSynthChain(
-            s,
-            context.destination,
-            polyCount
-          );
-
-          if (s.filterEnvAmount !== 0) {
-            filter.detune.setValueAtTime(0, startTime);
-            filter.detune.linearRampToValueAtTime(
-              s.filterEnvAmount,
-              startTime + s.attack
-            );
-            filter.detune.linearRampToValueAtTime(
-              0,
-              startTime + s.attack + s.decay
-            );
-          }
-
-          if (s.repeatSpeed > 0) {
-            const interval = 1 / s.repeatSpeed;
-            let t = 0;
-            let count = 0;
-            while (t < totalDuration) {
-              const triggerTime = startTime + t;
-              const singleNoteDur = Math.min(interval * 0.9, totalDuration - t);
-              
-              if (s.oscillatorType === "noise") {
-                source.triggerAttackRelease(singleNoteDur, triggerTime);
-              } else {
-                const baseFreq = Tone.Frequency(note.pitch).toFrequency();
-                const arpFreq = baseFreq * Math.pow(2, (s.arpAmount * count) / 12);
-                
-                source.detune.setValueAtTime(s.detune, triggerTime);
-                source.triggerAttackRelease(arpFreq, singleNoteDur, triggerTime);
-                
-                if (s.pitchAmount !== 0) {
-                  source.detune.linearRampToValueAtTime(
-                    s.detune + s.pitchAmount * 100,
-                    triggerTime + s.pitchTime
-                  );
-                }
-              }
-              t += interval;
-              count++;
-            }
-          } else {
-            if (s.oscillatorType === "noise") {
-              source.triggerAttackRelease(totalDuration, startTime);
-            } else {
-              source.detune.setValueAtTime(s.detune, startTime);
-              source.triggerAttackRelease(note.pitch, totalDuration, startTime);
-              
-              if (s.pitchAmount !== 0) {
-                source.detune.linearRampToValueAtTime(
-                  s.detune + s.pitchAmount * 100,
-                  startTime + s.pitchTime
-                );
-              }
-            }
-          }
-        });
-      }, maxDur + 0.5);
-
-      const finalBuffer = offlineBuffer.get();
-      if (!finalBuffer) throw new Error("Buffer generation failed");
-      
-      const wav = audioBufferToWav(finalBuffer);
-      const blob = new Blob([wav], { type: "audio/wav" });
-      const url = URL.createObjectURL(blob);
-      
-      const a = document.createElement("a");
-      a.download = `se_${Date.now()}.wav`;
-      a.href = url;
-      document.body.appendChild(a); 
-      a.click();
-      document.body.removeChild(a);
-      
-      showToast("DOWNLOAD STARTED", "success");
-    } catch (e) {
-      console.error(e);
-      showToast("DOWNLOAD FAILED", "error");
+      const { blob, stats } = await renderWav(params, notes);
+      downloadBlob(blob, `se_${presetName || Date.now()}.wav`);
+      notify(`WAV ${stats.seconds.toFixed(2)}s / peak ${stats.peakDb.toFixed(1)}dB`);
+    } catch {
+      notify("書き出しに失敗しました", false);
     } finally {
       setIsExporting(false);
     }
   };
 
-  const audioBufferToWav = (buffer: AudioBuffer) => {
-    const numOfChannels = buffer.numberOfChannels;
-    const length = buffer.length * numOfChannels * 2 + 44;
-    const out = new ArrayBuffer(length);
-    const view = new DataView(out);
-    const sampleRate = buffer.sampleRate;
-    const writeString = (offset: number, string: string) => {
-      for (let i = 0; i < string.length; i++)
-        view.setUint8(offset + i, string.charCodeAt(i));
-    };
-    writeString(0, "RIFF");
-    view.setUint32(4, length - 8, true);
-    writeString(8, "WAVE");
-    writeString(12, "fmt ");
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, numOfChannels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * numOfChannels * 2, true);
-    view.setUint16(32, numOfChannels * 2, true);
-    view.setUint16(34, 16, true);
-    writeString(36, "data");
-    view.setUint32(40, length - 44, true);
-    let offset = 44;
-    for (let i = 0; i < buffer.length; i++) {
-      for (let ch = 0; ch < numOfChannels; ch++) {
-        let s = Math.max(-1, Math.min(1, buffer.getChannelData(ch)[i]));
-        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-        offset += 2;
-      }
-    }
-    return out;
-  };
-
   const savePreset = () => {
-    if (!presetName.trim()) {
-      showToast("名前を入力してください", "error");
+    const name = presetName.trim();
+    if (!name) {
+      notify("名前を入力してください", false);
       return;
     }
-    const s = stateRef.current;
-    const isOverwrite = s.history.some((h: Preset) => h.name === presetName);
-    const newPreset: Preset = {
-      version: 1,
-      name: presetName,
-      params: {
-        bpm: s.bpm,
-        delayFeedback: s.delayFeedback,
-        filterCutoff: s.filterCutoff,
-        filterEnvAmount: s.filterEnvAmount,
-        oscillatorType: s.oscillatorType,
-        attack: s.attack,
-        decay: s.decay,
-        sustain: s.sustain,
-        release: s.release,
-        pitchAmount: s.pitchAmount,
-        pitchTime: s.pitchTime,
-        masterVolume: s.masterVolume,
-        repeatSpeed: s.repeatSpeed,
-        arpAmount: s.arpAmount,
-        lfoRate: s.lfoRate,
-        lfoDepth: s.lfoDepth,
-        lfoTarget: s.lfoTarget,
-        detune: s.detune,
-      },
-      notes: [...s.notes],
-    };
-    const newHistory = [
-      newPreset,
-      ...s.history.filter((h) => h.name !== presetName),
-    ];
-    state.setHistory(newHistory);
-    showToast(
-      isOverwrite ? `OVERWRITTEN: ${presetName}` : `SAVED: ${presetName}`,
-      "success"
-    );
+    const store = useStore.getState();
+    const overwrite = store.presets.some((p) => p.name === name);
+    const next: StoredPreset = { version: 1, name, params: { ...params }, notes: notes.map((n) => ({ ...n })) };
+    store.setPresets([next, ...store.presets.filter((p) => p.name !== name)]);
+    notify(overwrite ? `上書き保存: ${name}` : `保存: ${name}`);
   };
 
   const loadPreset = (name: string) => {
@@ -468,974 +161,232 @@ export default function App() {
       setPresetName("");
       return;
     }
-    const p = state.history.find((h) => h.name === name);
-    if (!p) return;
-    state.pushHistory();
-    state.setAllParams({ ...DEFAULT_STATE, ...p.params });
-    state.clearNotes();
-    p.notes.forEach((n) => state.addNote(n));
-    setPresetName(p.name);
-    showToast(`LOADED: ${p.name}`, "success");
-    setTimeout(playOnce, 50);
+    const preset = presets.find((p) => p.name === name);
+    if (!preset) return;
+    applySnapshot({ ...DEFAULT_PARAMS, ...preset.params }, preset.notes.map((n) => ({ ...n })));
+    setPresetName(preset.name);
+    notify(`読込: ${preset.name}`);
   };
 
   const deletePreset = () => {
     if (!presetName) return;
-    setConfirmData({
-      msg: `"${presetName}" をプリセット履歴から削除しますか？`,
+    setConfirm({
+      message: `"${presetName}" を削除しますか？`,
       onConfirm: () => {
-        state.setHistory(state.history.filter((h) => h.name !== presetName));
-        showToast(`DELETED: ${presetName}`, "success");
+        const store = useStore.getState();
+        store.setPresets(store.presets.filter((p) => p.name !== presetName));
+        notify(`削除: ${presetName}`);
         setPresetName("");
-        setConfirmData(null);
+        setConfirm(null);
       },
     });
   };
 
-  const clearAllNotes = () => {
-    setConfirmData({
-      msg: "すべてのノートを消去しますか？",
-      onConfirm: () => {
-        state.pushHistory();
-        handleUserChange();
-        state.clearNotes();
-        showToast("CLEARED ALL NOTES", "success");
-        setConfirmData(null);
-      },
-    });
+  const exportJson = () => {
+    const data = { current: { params, notes }, history: presets };
+    downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }), `se_composer_${Date.now()}.json`);
+    notify("JSON を書き出しました");
   };
 
-  const exportHistory = () => {
-    const s = stateRef.current;
-    const exportData = {
-      current: {
-        params: {
-          bpm: s.bpm,
-          delayFeedback: s.delayFeedback,
-          filterCutoff: s.filterCutoff,
-          filterEnvAmount: s.filterEnvAmount,
-          oscillatorType: s.oscillatorType,
-          attack: s.attack,
-          decay: s.decay,
-          sustain: s.sustain,
-          release: s.release,
-          pitchAmount: s.pitchAmount,
-          pitchTime: s.pitchTime,
-          masterVolume: s.masterVolume,
-          repeatSpeed: s.repeatSpeed,
-          arpAmount: s.arpAmount,
-          lfoRate: s.lfoRate,
-          lfoDepth: s.lfoDepth,
-          lfoTarget: s.lfoTarget,
-          detune: s.detune,
-        },
-        notes: s.notes,
-      },
-      history: s.history,
-    };
-    const blob = new Blob([JSON.stringify(exportData, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.download = `se_composer_data_${Date.now()}.json`;
-    a.href = url;
-    a.click();
-    showToast("DATA EXPORTED", "success");
+  /** 今鳴っている音だけを単体プリセットとして書き出す。CLI がそのまま読める形式 */
+  const exportCurrentPreset = () => {
+    const name = presetName.trim() || "se";
+    downloadBlob(
+      new Blob([JSON.stringify({ name, params, notes }, null, 2)], { type: "application/json" }),
+      `${name}.json`
+    );
+    notify(`${name}.json を書き出しました`);
   };
 
-  const importHistory = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const importJson = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = () => {
       try {
-        const data = JSON.parse(ev.target?.result as string);
-        state.pushHistory();
-        if (data.history && Array.isArray(data.history)) {
-          state.setHistory(data.history);
-          if (data.current) {
-            state.setAllParams(data.current.params);
-            state.clearNotes();
-            data.current.notes.forEach((n: any) => state.addNote(n));
-          }
-          showToast(`IMPORTED PRESETS & CURRENT STATE`, "success");
-        } else if (Array.isArray(data)) {
-          state.setHistory(data);
-          showToast(`IMPORTED ${data.length} PRESETS`, "success");
+        const data = JSON.parse(String(reader.result));
+        const store = useStore.getState();
+
+        // pitch を持たないノートは読み飛ばされる。黙って消えると気付けないので件数を出す
+        const skippedNote = (count: number) => (count > 0 ? `（pitch が無いノート ${count} 件を除外）` : "");
+
+        // CLI が吐く単体プリセット（{name, params, notes}）もそのまま読める
+        if (data && !Array.isArray(data) && data.params) {
+          const { params: p, notes: n, skipped } = normalizePreset(data);
+          applySnapshot(p, n);
+          if (typeof data.name === "string") setPresetName(data.name);
+          notify(`プリセットを読み込みました${data.name ? `: ${data.name}` : ""}${skippedNote(skipped)}`);
+          return;
         }
-      } catch (err) {
-        showToast("INVALID JSON", "error");
+
+        const rawPresets = Array.isArray(data) ? data : data?.history;
+        if (Array.isArray(rawPresets)) {
+          let skippedTotal = 0;
+          const cleaned: StoredPreset[] = rawPresets
+            .filter((p: unknown): p is { name: string } => !!p && typeof (p as StoredPreset).name === "string")
+            .map((p) => {
+              const { params: pp, notes: nn, skipped } = normalizePreset(p);
+              skippedTotal += skipped;
+              return { version: 1, name: p.name, params: pp, notes: nn };
+            });
+          store.setPresets(cleaned);
+          if (data?.current) {
+            const { params: p, notes: n, skipped } = normalizePreset(data.current);
+            skippedTotal += skipped;
+            applySnapshot(p, n);
+          }
+          notify(`${cleaned.length} 件のプリセットを読み込みました${skippedNote(skippedTotal)}`);
+          return;
+        }
+        notify("読み込める形式ではありません", false);
+      } catch {
+        notify("JSON の解析に失敗しました", false);
       }
     };
     reader.readAsText(file);
-    e.target.value = "";
   };
 
-  const applyPreset = (type: string) => {
-    state.pushHistory();
-    handleUserChange();
-    let p: any = { ...DEFAULT_STATE };
-    const r = (min: number, max: number) => Math.random() * (max - min) + min;
-
-    const ensureNote = (pitch: string, width: number = 1) => {
-       if (state.notes.length === 0)
-        state.addNote({
-          id: "preview",
-          time: "0:0:0",
-          pitch: pitch,
-          width: width,
-          velocity: 0.8,
-        });
-    }
-
-    switch (type) {
-      case "laser":
-        p = {
-          ...p,
-          oscillatorType: Math.random() > 0.5 ? "sawtooth" : "square",
-          pitchAmount: r(24, 48) * (Math.random() > 0.5 ? 1 : -1),
-          pitchTime: r(0.1, 0.4),
-          filterCutoff: r(1000, 8000),
-          filterEnvAmount: r(1000, 6000),
-          decay: r(0.1, 0.4),
-          sustain: r(0, 0.2),
-          release: r(0.1, 0.5),
-          delayFeedback: r(0.1, 0.4),
-          // LFOでうねりを追加
-          lfoRate: r(5, 15),
-          lfoDepth: Math.random() > 0.5 ? r(5, 20) : 0,
-          lfoTarget: "filter",
-        };
-        ensureNote("C5", 2);
-        break;
-        
-      case "bomb":
-        p = {
-          ...p,
-          oscillatorType: "noise",
-          decay: r(0.5, 2.0),
-          sustain: 0,
-          release: r(1.0, 3.0),
-          filterCutoff: r(300, 1000),
-          filterEnvAmount: r(500, 2000),
-          attack: 0.01,
-          masterVolume: -3,
-          lfoRate: r(0.1, 2),
-          lfoDepth: r(10, 50),
-          lfoTarget: "filter",
-        };
-        ensureNote("C2", 4);
-        break;
-        
-      case "coin":
-        p = {
-          ...p,
-          oscillatorType: Math.random() > 0.5 ? "sine" : "triangle",
-          pitchAmount: 0, 
-          attack: 0.005,
-          decay: r(0.1, 0.3),
-          sustain: 0,
-          release: r(0.1, 0.4),
-          arpAmount: Math.random() > 0.5 ? 0 : 12,
-          repeatSpeed: Math.random() > 0.7 ? r(15, 25) : 0,
-          filterCutoff: 8000,
-          detune: r(0, 10), // 微妙な厚み
-        };
-        ensureNote("C6", 1);
-        break;
-
-      case "powerup":
-        p = {
-          ...p,
-          oscillatorType: "square",
-          attack: r(0.01, 0.1),
-          decay: r(0.2, 0.5),
-          sustain: 0.4,
-          release: 0.5,
-          pitchAmount: r(12, 24),
-          pitchTime: 0.3,
-          repeatSpeed: r(10, 30),
-          arpAmount: r(1, 5),
-          filterCutoff: r(2000, 5000),
-          delayFeedback: 0.3,
-          lfoRate: r(2, 8),
-          lfoDepth: r(5, 15),
-          lfoTarget: "pitch", // 揺れる上昇音
-        };
-        ensureNote("C4", 3);
-        break;
-
-      case "damage":
-        p = {
-          ...p,
-          oscillatorType: Math.random() > 0.5 ? "sawtooth" : "square",
-          pitchAmount: r(-24, -12),
-          pitchTime: r(0.05, 0.2),
-          attack: 0.01,
-          decay: 0.2,
-          sustain: 0.1,
-          release: 0.2,
-          repeatSpeed: r(20, 50),
-          arpAmount: r(-6, -1),
-          filterCutoff: r(1000, 3000),
-          lfoRate: r(10, 20),
-          lfoDepth: r(20, 50),
-          lfoTarget: "pitch", // 激しいビブラートで痛みを表現
-        };
-        ensureNote("C3", 1);
-        break;
-
-      case "jump":
-        p = {
-          ...p,
-          oscillatorType: Math.random() > 0.5 ? "sine" : "square",
-          pitchAmount: r(12, 36),
-          pitchTime: r(0.1, 0.3),
-          attack: 0.01,
-          decay: 0.2,
-          sustain: 0.1,
-          release: 0.2,
-        };
-        ensureNote("C4", 1);
-        break;
-
-      case "random":
-        const types: OscillatorType[] = ["sine", "square", "sawtooth", "triangle", "noise"];
-        p = {
-          ...p,
-          oscillatorType: types[Math.floor(Math.random() * types.length)],
-          attack: r(0.001, 0.5),
-          decay: r(0.05, 1.0),
-          sustain: r(0, 0.8),
-          release: r(0.05, 2.0),
-          
-          pitchAmount: r(-48, 48),
-          pitchTime: r(0.01, 1.0),
-          
-          filterCutoff: r(100, 8000),
-          filterEnvAmount: r(0, 5000),
-          
-          repeatSpeed: Math.random() > 0.6 ? r(0, 40) : 0, 
-          arpAmount: Math.floor(r(-12, 12)),
-          
-          delayFeedback: Math.random() > 0.5 ? r(0, 0.6) : 0,
-          
-          // LFO & Detune Random
-          lfoRate: r(0.1, 20),
-          lfoDepth: Math.random() > 0.5 ? r(0, 80) : 0,
-          lfoTarget: Math.random() > 0.5 ? "pitch" : "filter",
-          detune: Math.random() > 0.5 ? r(0, 50) : 0,
-        };
-        ensureNote("C4", 2);
-        break;
-        
-      default:
-        break;
-    }
-    
-    p.masterVolume = -6;
-    state.setAllParams(p);
-    setTimeout(playOnce, 50);
-  };
+  const clearNotes = () =>
+    setConfirm({
+      message: "すべてのノートを消去しますか？",
+      onConfirm: () => {
+        beginEdit();
+        useStore.getState().clearNotes();
+        notify("ノートを消去しました");
+        setConfirm(null);
+      },
+    });
 
   return (
-    <div style={containerS}>
-      {toast && (
-        <div
-          style={{
-            ...toastS,
-            backgroundColor: toast.type === "success" ? "#10b981" : "#f43f5e",
-          }}
-        >
-          {toast.msg}
-        </div>
-      )}
+    <div style={S.container}>
+      {toast && <div style={S.toast(toast.ok)}>{toast.message}</div>}
 
-      {confirmData && (
-        <div style={overlayS}>
-          <div style={modalS}>
-            <AlertTriangle
-              size={32}
-              color="#f43f5e"
-              style={{ marginBottom: "12px" }}
-            />
-            <div
-              style={{
-                fontSize: "14px",
-                fontWeight: "bold",
-                marginBottom: "20px",
-                color: "#f8fafc",
-              }}
-            >
-              {confirmData.msg}
-            </div>
-            <div
-              style={{ display: "flex", gap: "12px", justifyContent: "center" }}
-            >
-              <button onClick={() => setConfirmData(null)} style={modalBtnS}>
-                CANCEL
+      {confirm && (
+        <div style={S.overlay} onClick={() => setConfirm(null)}>
+          <div style={S.modal} onClick={(e) => e.stopPropagation()}>
+            <AlertTriangle size={28} color={S.color.danger} />
+            <div style={{ margin: "12px 0 20px", fontSize: 14 }}>{confirm.message}</div>
+            <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+              <button style={{ ...S.button, background: S.color.border }} onClick={() => setConfirm(null)}>
+                キャンセル
               </button>
-              <button
-                onClick={confirmData.onConfirm}
-                style={{ ...modalBtnS, backgroundColor: "#f43f5e" }}
-              >
-                DELETE
+              <button style={{ ...S.button, background: S.color.danger }} onClick={confirm.onConfirm}>
+                実行
               </button>
             </div>
           </div>
         </div>
       )}
 
-      <h2
-        style={{ color: "#f8fafc", margin: "0 0 20px 0", letterSpacing: "2px" }}
-      >
-        WEB SE COMPOSER
-      </h2>
+      <h1 style={{ fontSize: 18, letterSpacing: 3, margin: "0 0 16px" }}>SE-COMPOSER</h1>
 
-      <div style={pianoRollWrapperS} onMouseDown={handleUserChange}>
-        <PianoRoll />
-      </div>
+      <PianoRoll />
 
-      <div style={flexCenterS}>
-        <button
-          onClick={isPlaying ? stopAndDispose : playOnce}
-          style={playBtnS}
-        >
-          {isPlaying ? <Square size={18} /> : <Play size={18} />}{" "}
-          {isPlaying ? "STOP" : "PLAY"}
+      <div style={S.row}>
+        <button style={S.button} onClick={() => (isPlaying ? stopPlayback() : void playCurrent())}>
+          {isPlaying ? <Square size={16} /> : <Play size={16} />} {isPlaying ? "STOP" : "PLAY"}
         </button>
-
-        <div style={{ display: "flex", gap: "4px", margin: "0 10px" }}>
-          <button
-            onClick={handleUndo}
-            disabled={state.past.length === 0}
-            style={historyBtnS}
-            title="Undo (Ctrl+Z)"
-          >
+        <button
+          style={{ ...S.button, background: S.color.ok }}
+          onClick={() => void handleDownload()}
+          disabled={isExporting || notes.length === 0}
+        >
+          <Download size={16} /> {isExporting ? "EXPORTING..." : "WAV"}
+        </button>
+        <button
+          style={{ ...S.button, background: S.color.panel, border: `1px solid ${S.color.border}` }}
+          onClick={exportCurrentPreset}
+          disabled={notes.length === 0}
+          title="この音だけをプリセットJSONで保存（CLI がそのまま読める）"
+        >
+          <Download size={16} /> JSON
+        </button>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button style={S.iconButton} onClick={() => { useStore.getState().undo(); void playCurrent(); }} disabled={past.length === 0} title="元に戻す (Ctrl+Z)">
             <Undo2 size={16} />
           </button>
-          <button
-            onClick={handleRedo}
-            disabled={state.future.length === 0}
-            style={historyBtnS}
-            title="Redo (Ctrl+Y)"
-          >
+          <button style={S.iconButton} onClick={() => { useStore.getState().redo(); void playCurrent(); }} disabled={future.length === 0} title="やり直す (Ctrl+Y)">
             <Redo2 size={16} />
           </button>
+          <button style={S.iconButton} onClick={clearNotes} title="ノートを消去">
+            <Trash2 size={16} />
+          </button>
         </div>
+        <div style={S.group}>
+          <Waves size={14} color={S.color.muted} />
+          <OscillatorSelect
+            value={params.oscillatorType}
+            onChange={(v) => {
+              beginEdit();
+              useStore.getState().setParam("oscillatorType", v);
+              void playCurrent();
+            }}
+          />
+        </div>
+        <div style={S.group}>
+          <Music size={14} color={S.color.muted} />
+          <input
+            type="number"
+            value={params.bpm}
+            min={40}
+            max={300}
+            onFocus={beginEdit}
+            onChange={(e) => useStore.getState().setParam("bpm", Number(e.target.value) || 120)}
+            onBlur={endEdit}
+            style={{ ...S.input, width: 64 }}
+          />
+          <span style={{ fontSize: 10, color: S.color.muted }}>BPM</span>
+        </div>
+      </div>
 
-        <button
-          onClick={handleDownload}
-          disabled={isExporting}
-          style={{
-            ...playBtnS,
-            backgroundColor: "#10b981",
-            marginLeft: "12px",
-          }}
-        >
-          <Download size={18} /> {isExporting ? "EXPORTING..." : "WAV"}
+      <div style={S.row}>
+        {SAMPLE_KINDS.map((kind) => (
+          <button key={kind} style={S.chip} onClick={() => handleSample(kind)}>
+            {kind}
+          </button>
+        ))}
+        <button style={{ ...S.chip, borderColor: S.color.accent, color: S.color.accent }} onClick={() => handleSample("random")}>
+          <Shuffle size={12} /> random
         </button>
       </div>
 
-      <div style={managerContainerS}>
-        <div style={inputGroupS}>
-          <select
-            value={presetName}
-            onChange={(e) => loadPreset(e.target.value)}
-            style={selectS}
-          >
-            <option
-              value=""
-              style={{ backgroundColor: "#1e293b", color: "#f8fafc" }}
-            >
-              -- PRESET HISTORY --
-            </option>
-            {state.history.map((h: Preset) => (
-              <option
-                key={h.name}
-                value={h.name}
-                style={{ backgroundColor: "#1e293b", color: "#f8fafc" }}
-              >
-                {h.name}
+      <div style={S.row}>
+        <div style={S.group}>
+          <select value={presetName} onChange={(e) => loadPreset(e.target.value)} style={{ ...S.select, minWidth: 180 }}>
+            <option value="">-- 保存済みプリセット --</option>
+            {presets.map((p) => (
+              <option key={p.name} value={p.name}>
+                {p.name}
               </option>
             ))}
           </select>
-          <button
-            onClick={exportHistory}
-            style={iconBtnS}
-            title="Export JSON (↑)"
-          >
-            <FileUp size={16} />
+          <button style={S.iconButton} onClick={exportJson} title="JSON を書き出す">
+            <FileUp size={14} />
           </button>
-          <label
-            style={{ ...iconBtnS, cursor: "pointer" }}
-            title="Import JSON (↓)"
-          >
-            <FileDown size={16} />
-            <input
-              type="file"
-              accept=".json"
-              onChange={importHistory}
-              style={{ display: "none" }}
-            />
+          <label style={{ ...S.iconButton, cursor: "pointer" }} title="JSON を読み込む">
+            <FileDown size={14} />
+            <input type="file" accept=".json" onChange={importJson} style={{ display: "none" }} />
           </label>
         </div>
-        <div style={inputGroupS}>
+        <div style={S.group}>
           <input
             type="text"
-            placeholder="Preset Name..."
+            placeholder="プリセット名"
             value={presetName}
             onChange={(e) => setPresetName(e.target.value)}
-            style={nameInputS}
+            style={{ ...S.input, width: 160 }}
           />
-          <button onClick={savePreset} style={saveBtnS}>
-            <Save size={14} /> SAVE
+          <button style={{ ...S.button, padding: "8px 12px", fontSize: 11 }} onClick={savePreset}>
+            <Save size={13} /> SAVE
           </button>
-          <button
-            onClick={deletePreset}
-            style={{ ...saveBtnS, backgroundColor: "#f43f5e" }}
-          >
+          <button style={{ ...S.button, padding: "8px 12px", fontSize: 11, background: S.color.danger }} onClick={deletePreset}>
             DEL
           </button>
         </div>
       </div>
 
-      <div style={flexCenterS}>
-        <div style={inputGroupS}>
-          {["laser", "coin", "jump", "powerup", "damage", "bomb"].map((t) => (
-            <button key={t} onClick={() => applyPreset(t)} style={sampleBtnS}>
-              {t.toUpperCase()}
-            </button>
-          ))}
-          <button
-            onClick={() => applyPreset("random")}
-            style={{ ...sampleBtnS, borderColor: "#3b82f6", color: "#3b82f6" }}
-          >
-            <Shuffle size={12} /> RANDOM
-          </button>
-        </div>
-        <div style={inputGroupS}>
-          <Waves size={16} color="#94a3b8" />
-          <select
-            value={state.oscillatorType}
-            onChange={(e) => {
-              state.pushHistory();
-              handleUserChange();
-              state.setOscillatorType(e.target.value as any);
-              setTimeout(playOnce, 50);
-            }}
-            style={selectS}
-          >
-            {["sine", "triangle", "square", "sawtooth", "noise"].map((o) => (
-              <option
-                key={o}
-                value={o}
-                style={{ backgroundColor: "#1e293b", color: "#f8fafc" }}
-              >
-                {o.toUpperCase()}
-              </option>
-            ))}
-          </select>
-          <Clock size={16} color="#94a3b8" />
-          <input
-            type="number"
-            value={state.bpm}
-            onChange={(e) => {
-              state.pushHistory();
-              handleUserChange();
-              state.setBpm(Number(e.target.value));
-            }}
-            style={bpmS}
-          />
-        </div>
-        <button onClick={clearAllNotes} style={iconBtnS} title="Clear Notes">
-          <Trash2 size={20} color="#f43f5e" />
-        </button>
-      </div>
-
-      <div style={categoryGridS}>
-        <div style={categoryBoxS}>
-          <div style={categoryTitleS}>
-            <Activity size={14} /> OSC & ENVELOPE
-          </div>
-          <Panel
-            title="ATTACK"
-            val={state.attack}
-            min={0}
-            max={2}
-            step={0.01}
-            onStart={onParamStart}
-            onChange={(v: any) =>
-              onParamChange(v, (val) => state.setEnvelope("attack", val))
-            }
-            onEnd={onParamEnd}
-          />
-          <Panel
-            title="DECAY"
-            val={state.decay}
-            min={0.01}
-            max={2}
-            step={0.01}
-            onStart={onParamStart}
-            onChange={(v: any) =>
-              onParamChange(v, (val) => state.setEnvelope("decay", val))
-            }
-            onEnd={onParamEnd}
-          />
-          <Panel
-            title="SUSTAIN"
-            val={state.sustain}
-            min={0}
-            max={1}
-            step={0.01}
-            onStart={onParamStart}
-            onChange={(v: any) =>
-              onParamChange(v, (val) => state.setEnvelope("sustain", val))
-            }
-            onEnd={onParamEnd}
-          />
-          <Panel
-            title="RELEASE"
-            val={state.release}
-            min={0.01}
-            max={3}
-            step={0.01}
-            onStart={onParamStart}
-            onChange={(v: any) =>
-              onParamChange(v, (val) => state.setEnvelope("release", val))
-            }
-            onEnd={onParamEnd}
-          />
-        </div>
-        <div style={categoryBoxS}>
-          <div style={categoryTitleS}>
-            <Music size={14} /> PITCH & ARPEGGIO
-          </div>
-          <Panel
-            title="REPEAT SPEED (Hz)"
-            val={state.repeatSpeed}
-            min={0}
-            max={100}
-            step={0.1}
-            onStart={onParamStart}
-            onChange={(v: any) =>
-              onParamChange(v, (val) => state.setEffect("repeatSpeed", val))
-            }
-            onEnd={onParamEnd}
-          />
-          <Panel
-            title="ARP AMOUNT (semi)"
-            val={state.arpAmount}
-            min={-12}
-            max={12}
-            step={1}
-            onStart={onParamStart}
-            onChange={(v: any) =>
-              onParamChange(v, (val) => state.setPitchEffect("arpAmount", val))
-            }
-            onEnd={onParamEnd}
-          />
-          <Panel
-            title="PITCH AMOUNT"
-            val={state.pitchAmount}
-            min={-48}
-            max={48}
-            onStart={onParamStart}
-            onChange={(v: any) =>
-              onParamChange(v, (val) => state.setPitchEffect("pitchAmount", val))
-            }
-            onEnd={onParamEnd}
-          />
-          <Panel
-            title="PITCH TIME"
-            val={state.pitchTime}
-            min={0.01}
-            max={1.5}
-            step={0.01}
-            onStart={onParamStart}
-            onChange={(v: any) =>
-              onParamChange(v, (val) => state.setPitchEffect("pitchTime", val))
-            }
-            onEnd={onParamEnd}
-          />
-        </div>
-        
-        {/* New Category: MODULATION */}
-        <div style={categoryBoxS}>
-          <div style={categoryTitleS}>
-            <Zap size={14} /> MODULATION (LFO)
-          </div>
-          <Panel
-            title="LFO RATE (Hz)"
-            val={state.lfoRate}
-            min={0.1}
-            max={20}
-            step={0.1}
-            onStart={onParamStart}
-            onChange={(v: any) =>
-              onParamChange(v, (val) => state.setModulation("lfoRate", val))
-            }
-            onEnd={onParamEnd}
-          />
-          <Panel
-            title="LFO DEPTH"
-            val={state.lfoDepth}
-            min={0}
-            max={100}
-            step={1}
-            onStart={onParamStart}
-            onChange={(v: any) =>
-              onParamChange(v, (val) => state.setModulation("lfoDepth", val))
-            }
-            onEnd={onParamEnd}
-          />
-          <div style={{ ...panelS, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0' }}>
-            <div style={{ fontSize: "10px", fontWeight: "bold", color: "#64748b", textTransform: "uppercase" }}>TARGET</div>
-            <div style={{ display: 'flex', gap: '8px' }}>
-               <button 
-                 onClick={() => { onParamStart(); state.setModulation("lfoTarget", "pitch"); onParamEnd(); }}
-                 style={state.lfoTarget === "pitch" ? activeToggleS : toggleS}
-               >PITCH</button>
-               <button 
-                 onClick={() => { onParamStart(); state.setModulation("lfoTarget", "filter"); onParamEnd(); }}
-                 style={state.lfoTarget === "filter" ? activeToggleS : toggleS}
-               >FILTER</button>
-            </div>
-          </div>
-           <Panel
-            title="DETUNE (cents)"
-            val={state.detune}
-            min={0}
-            max={50}
-            step={1}
-            onStart={onParamStart}
-            onChange={(v: any) =>
-              onParamChange(v, (val) => state.setModulation("detune", val))
-            }
-            onEnd={onParamEnd}
-          />
-        </div>
-
-        <div style={categoryBoxS}>
-          <div style={categoryTitleS}>
-            <Settings size={14} /> EFFECTS & MASTER
-          </div>
-          <Panel
-            title="FILTER (Hz)"
-            val={state.filterCutoff}
-            min={100}
-            max={10000}
-            step={10}
-            onStart={onParamStart}
-            onChange={(v: any) =>
-              onParamChange(v, (val) => state.setEffect("filterCutoff", val))
-            }
-            onEnd={onParamEnd}
-          />
-          <Panel
-            title="FILTER ENV"
-            val={state.filterEnvAmount}
-            min={0}
-            max={10000}
-            step={10}
-            onStart={onParamStart}
-            onChange={(v: any) =>
-              onParamChange(v, (val) => state.setEffect("filterEnvAmount", val))
-            }
-            onEnd={onParamEnd}
-          />
-          <Panel
-            title="DELAY FEEDBACK"
-            val={state.delayFeedback}
-            min={0}
-            max={0.9}
-            step={0.01}
-            onStart={onParamStart}
-            onChange={(v: any) =>
-              onParamChange(v, (val) => state.setEffect("delayFeedback", val))
-            }
-            onEnd={onParamEnd}
-          />
-          <Panel
-            title="MASTER VOL (dB)"
-            val={state.masterVolume}
-            min={-60}
-            max={0}
-            step={1}
-            onStart={onParamStart}
-            onChange={(v: any) =>
-              onParamChange(v, (val) => state.setEffect("masterVolume", val))
-            }
-            onEnd={onParamEnd}
-          />
-        </div>
-      </div>
+      <Params onStart={beginEdit} onEnd={endEdit} />
     </div>
   );
 }
-
-const Panel = ({ title, val, min, max, step = 1, onStart, onChange, onEnd }: any) => (
-  <div style={panelS}>
-    <div
-      style={{
-        fontSize: "10px",
-        fontWeight: "bold",
-        marginBottom: "4px",
-        color: "#64748b",
-        textTransform: "uppercase",
-      }}
-    >
-      {title}
-    </div>
-    <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={val}
-        onPointerDown={onStart}
-        onChange={(e) => onChange(Number(e.target.value))}
-        onPointerUp={onEnd}
-        style={{ flex: 1, accentColor: "#3b82f6" }}
-      />
-      <input
-        type="number"
-        min={min}
-        max={max}
-        step={step}
-        value={val}
-        onChange={(e) => {
-            if (onStart) onStart();
-            onChange(Number(e.target.value));
-            if (onEnd) onEnd();
-        }}
-        style={numInputS}
-      />
-    </div>
-  </div>
-);
-
-// Styles
-const toastS: any = {
-  position: "fixed",
-  top: "20px",
-  left: "50%",
-  transform: "translateX(-50%)",
-  padding: "10px 30px",
-  borderRadius: "30px",
-  color: "white",
-  fontWeight: "bold",
-  fontSize: "13px",
-  zIndex: 1000,
-  boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-  letterSpacing: "1px",
-};
-const overlayS: any = {
-  position: "fixed",
-  top: 0,
-  left: 0,
-  width: "100%",
-  height: "100%",
-  backgroundColor: "rgba(0,0,0,0.7)",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  zIndex: 2000,
-};
-const modalS: any = {
-  backgroundColor: "#1e293b",
-  padding: "30px",
-  borderRadius: "16px",
-  border: "1px solid #334155",
-  textAlign: "center",
-  maxWidth: "400px",
-  width: "90%",
-};
-const modalBtnS: any = {
-  padding: "8px 24px",
-  borderRadius: "6px",
-  border: "none",
-  backgroundColor: "#475569",
-  color: "white",
-  cursor: "pointer",
-  fontWeight: "bold",
-  fontSize: "12px",
-};
-const historyBtnS: any = {
-  padding: "6px 12px",
-  borderRadius: "6px",
-  border: "1px solid #334155",
-  backgroundColor: "#1e293b",
-  color: "#f8fafc",
-  cursor: "pointer",
-  display: "flex",
-  alignItems: "center",
-  opacity: 0.8,
-};
-const managerContainerS: any = {
-  display: "flex",
-  justifyContent: "center",
-  gap: "12px",
-  marginTop: "20px",
-  flexWrap: "wrap",
-};
-const nameInputS: any = {
-  border: "none",
-  backgroundColor: "transparent",
-  color: "#f8fafc",
-  fontWeight: "bold",
-  outline: "none",
-  width: "120px",
-};
-const saveBtnS: any = {
-  background: "#3b82f6",
-  border: "none",
-  color: "white",
-  fontSize: "10px",
-  padding: "4px 12px",
-  borderRadius: "4px",
-  cursor: "pointer",
-  fontWeight: "bold",
-  display: "flex",
-  alignItems: "center",
-  gap: "4px",
-};
-const categoryGridS: any = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
-  gap: "20px",
-  maxWidth: "1200px",
-  margin: "40px auto",
-  padding: "0 20px",
-};
-const categoryBoxS: any = {
-  background: "#1e293b",
-  borderRadius: "12px",
-  border: "1px solid #334155",
-  padding: "20px",
-  display: "flex",
-  flexDirection: "column",
-  gap: "12px",
-};
-const categoryTitleS: any = {
-  fontSize: "12px",
-  fontWeight: "bold",
-  color: "#3b82f6",
-  marginBottom: "10px",
-  display: "flex",
-  alignItems: "center",
-  gap: "8px",
-  borderBottom: "1px solid #334155",
-  paddingBottom: "8px",
-};
-const numInputS: any = {
-  width: "50px",
-  backgroundColor: "#0f172a",
-  color: "#3b82f6",
-  border: "1px solid #334155",
-  borderRadius: "4px",
-  padding: "2px 4px",
-  fontSize: "11px",
-  textAlign: "right",
-};
-const sampleBtnS: any = {
-  background: "transparent",
-  border: "1px solid #475569",
-  color: "#f8fafc",
-  fontSize: "10px",
-  padding: "4px 8px",
-  borderRadius: "4px",
-  cursor: "pointer",
-  fontWeight: "bold",
-};
-const containerS: any = {
-  padding: "20px",
-  textAlign: "center",
-  backgroundColor: "#0f172a",
-  minHeight: "100vh",
-  color: "#f8fafc",
-  fontFamily: "sans-serif",
-};
-const pianoRollWrapperS: any = {
-  backgroundColor: "#1e293b",
-  padding: "20px",
-  borderRadius: "12px",
-  display: "inline-block",
-  border: "1px solid #334155",
-};
-const flexCenterS: any = {
-  marginTop: "20px",
-  display: "flex",
-  justifyContent: "center",
-  gap: "12px",
-  flexWrap: "wrap",
-};
-const playBtnS: any = {
-  padding: "10px 24px",
-  borderRadius: "8px",
-  border: "none",
-  backgroundColor: "#3b82f6",
-  color: "white",
-  cursor: "pointer",
-  display: "flex",
-  alignItems: "center",
-  gap: "8px",
-  fontWeight: "bold",
-};
-const inputGroupS: any = {
-  display: "flex",
-  alignItems: "center",
-  gap: "10px",
-  background: "#1e293b",
-  padding: "8px 16px",
-  borderRadius: "8px",
-  border: "1px solid #334155",
-};
-const selectS: any = {
-  border: "none",
-  backgroundColor: "#1e293b",
-  color: "#f8fafc",
-  fontWeight: "bold",
-  outline: "none",
-  maxWidth: "150px",
-  padding: "4px 8px",
-  borderRadius: "4px",
-};
-const bpmS: any = {
-  width: "45px",
-  border: "none",
-  backgroundColor: "transparent",
-  color: "#f8fafc",
-  textAlign: "center",
-  fontWeight: "bold",
-  outline: "none",
-};
-const iconBtnS: any = {
-  padding: "8px",
-  borderRadius: "8px",
-  border: "1px solid #334155",
-  backgroundColor: "#1e293b",
-  cursor: "pointer",
-  color: "#94a3b8",
-  display: "flex",
-  alignItems: "center",
-};
-const panelS: any = { textAlign: "left" };
-const toggleS: any = {
-  background: "#0f172a",
-  border: "1px solid #334155",
-  color: "#64748b",
-  fontSize: "10px",
-  padding: "2px 6px",
-  borderRadius: "4px",
-  cursor: "pointer",
-  fontWeight: "bold",
-};
-const activeToggleS: any = {
-  ...toggleS,
-  background: "#3b82f6",
-  color: "white",
-  borderColor: "#3b82f6",
-};

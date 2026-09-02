@@ -1,0 +1,9 @@
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  /* src/ui/styles.ts の color.bg と同じ値。ページ全面をコンテンツと同色にする */
+  background: #0f172a;
+}

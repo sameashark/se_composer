@@ -91,7 +91,7 @@ node cli/render.mjs '{"params":{"oscillatorType":"square","pitchAmount":24},"not
 | | `arpAmount` | 連打1回ごとの音程変化（半音） |
 | 変調 | `lfoRate` `lfoDepth` `lfoTarget` | 揺れ。`pitch`=ビブラート / `filter`=ワウ |
 | 音質 | `filterCutoff` | ローパスの明るさ(Hz) |
-| | `filterEnvAmount` | アタック時にフィルタが開く量(cents)。`filterCutoff` との積が 20000Hz を超える分は切り捨てる |
+| | `filterEnvAmount` | アタック時にフィルタが開く量(cents)。開閉の時間は `attack` `decay` と共有する。**`filterCutoff` が低いほど効く**（高いと通す倍音が残っていない）。上限 20000Hz |
 | | `delayFeedback` | ディレイの送り量兼帰還量。0.25秒間隔で反響する。原音は遅れない |
 | 出力 | `masterVolume` | dB |
 | | `bpm` | `time` と `width` の基準。ディレイ間隔は bpm に追従せず 0.25秒固定 |

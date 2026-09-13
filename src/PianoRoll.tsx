@@ -3,7 +3,7 @@ import { CircleHelp, X } from "lucide-react";
 import { useStore } from "./store";
 import { newNoteId } from "./randomize";
 import { peekContext } from "./audio/player";
-import { DELAY_TIME, normalizePreset } from "./core/engine.js";
+import { normalizePreset } from "./core/engine.js";
 import type { SeNote } from "./core/engine.js";
 import { color, modal, overlay } from "./ui/styles";
 
@@ -538,10 +538,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({ playback }) => {
         hide();
         return;
       }
-      // 原音もディレイラインを通るため発音全体が DELAY_TIME 遅れる。
-      // カーソルを譜面時刻のまま走らせるとノートの頭で音が鳴っておらず気持ち悪いので、
-      // 実際に聞こえている位置に合わせる（DAW のプラグイン遅延補償にあたる）
-      const elapsed = ctx.currentTime - playback.startAt - DELAY_TIME;
+      const elapsed = ctx.currentTime - playback.startAt;
       const step = elapsed / stepSec;
       if (elapsed < 0 || step > STEPS) hide();
       else {

@@ -127,7 +127,8 @@ export function estimateDuration(params, notes) {
   }
   const fb = clamp(params.delayFeedback, 0, 0.95);
   const tail = fb > 0.01 ? Math.min(delayTime * (Math.log(0.001) / Math.log(fb)), 8) : 0;
-  // 原音自体がディレイを通るので、その分（delayTime）も必ず足す
+  // ディレイの1周ぶん（delayTime）と減衰しきるまで（tail）は音が残る。
+  // delayLevel が 0 なら不要だが、長めに見積もっても末尾は wav 側でトリムされる
   return end + delayTime + tail + 0.3;
 }
 
@@ -261,10 +262,17 @@ function createEnvelope(ctx, param, params) {
 /**
  * ノート1つ分の信号経路。旧版と同じくノートごとに独立して作る。
  *
- *   osc/noise -> amp(envelope) -> volume -> delay <-> feedback -> filter -> limiter -> destination
+ *   osc/noise -> amp(envelope) -> volume -+-------------------------> filter -> limiter -> out
+ *                                         +-> delay <-> feedback -> send -^
  *
- * ディレイは 100% wet（Tone.FeedbackDelay を直列に挟んでいた旧版と同じ）。
- * 原音自体が delayTime だけ遅れてフィルタに届き、そのずれも音色の一部になっている。
+ * ディレイは送り。原音は必ず素通りするので、発音が delayTime 遅れることはない。
+ * 旧版（Tone.FeedbackDelay を直列に挟んだ 100% wet）は原音まで 0.25 秒遅れていた。
+ *
+ * 送り量を delayFeedback と同じ値にしているのは、旧版と音を揃えるため。旧版は原音が
+ * ディレイを1周して出ていたので、聞こえる反響は「原音 x delayFeedback」だった。
+ * 送り量を別のパラメータにすると、この比が変わって既存の音が全部作り直しになる
+ * （delayFeedback 0.05 の jump に 0.25 の反響が足され、1発の音が2発に聞こえた）。
+ * 同じ値にすると出力は旧版を delayTime だけ前にずらしたものと一致する。
  */
 function buildNoteChain(ctx, params, destination, volumeDb) {
   const limiter = ctx.createDynamicsCompressor();
@@ -275,9 +283,10 @@ function buildNoteChain(ctx, params, destination, volumeDb) {
   limiter.release.value = 0.01;
   limiter.connect(destination);
 
+  const cutoff = clamp(params.filterCutoff, 20, 20000);
   const filter = ctx.createBiquadFilter();
   filter.type = "lowpass";
-  filter.frequency.value = clamp(params.filterCutoff, 20, 20000);
+  filter.frequency.value = cutoff;
   filter.Q.value = 2;
   filter.connect(limiter);
 
@@ -287,14 +296,19 @@ function buildNoteChain(ctx, params, destination, volumeDb) {
   feedback.gain.value = clamp(params.delayFeedback, 0, 0.9);
   delay.connect(feedback);
   feedback.connect(delay);
-  delay.connect(filter);
+  const send = ctx.createGain();
+  send.gain.value = clamp(params.delayFeedback, 0, 0.9);
+  delay.connect(send);
+  send.connect(filter);
 
   const volume = ctx.createGain();
   volume.gain.value = dbToGain(volumeDb);
+  volume.connect(filter);
   volume.connect(delay);
 
   // LFO もノートごと。pitch 指定でも noise には変調先が無いので作らない
   let lfoDetune = null;
+  let lfoPeak = 0;
   const depth = Number(params.lfoDepth) || 0;
   if (depth > 0) {
     const isPitch = params.lfoTarget === "pitch";
@@ -307,11 +321,20 @@ function buildNoteChain(ctx, params, destination, volumeDb) {
       lfo.connect(amount);
       lfo.start(0);
       if (isPitch) lfoDetune = amount;
-      else amount.connect(filter.frequency);
+      else {
+        amount.connect(filter.frequency);
+        lfoPeak = amount.gain.value;
+      }
     }
   }
 
-  return { input: volume, filter, lfoDetune };
+  // BiquadFilter は実効周波数（frequency x 2^(detune/1200)）が Nyquist を超えると破綻する。
+  // ブラウザは仕様どおり clamp するが node-web-audio-api はしないため、放っておくと同じ
+  // JSON でも UI と CLI で音が違う。frequency の上限と同じ 20000Hz でこちらから抑える。
+  // sampleRate 基準にしないのは、44.1kHz の CLI と 48kHz のブラウザで音を変えないため
+  const maxDetune = Math.max(0, 1200 * Math.log2(20000 / Math.min(20000, cutoff + lfoPeak)));
+
+  return { input: volume, filter, lfoDetune, maxDetune };
 }
 
 /**
@@ -367,8 +390,9 @@ export function schedule(ctx, params, notes, destination, when = 0) {
     const envelope = createEnvelope(ctx, amp.gain, params);
 
     if (params.filterEnvAmount !== 0) {
+      const envAmount = Math.min(params.filterEnvAmount, chain.maxDetune);
       chain.filter.detune.setValueAtTime(0, t0);
-      chain.filter.detune.linearRampToValueAtTime(params.filterEnvAmount, t0 + Math.max(attack, 0.001));
+      chain.filter.detune.linearRampToValueAtTime(envAmount, t0 + Math.max(attack, 0.001));
       chain.filter.detune.linearRampToValueAtTime(0, t0 + Math.max(attack, 0.001) + decay);
     }
 
@@ -450,5 +474,6 @@ export function schedule(ctx, params, notes, destination, when = 0) {
     if (lastStop > endTime) endTime = lastStop;
   }
 
+  // 最後の hit のあともディレイが1周ぶん鳴る
   return { endTime: endTime + DELAY_TIME };
 }

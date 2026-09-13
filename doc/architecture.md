@@ -39,7 +39,7 @@ v2 は Tone.js を外したが、**音は v1 を正とした**。以下は「Ton
 | エンベロープの decay/release | `setTargetAtTime` による指数接近。時定数は `ln(rampTime+1)/ln(200)` | Tone.Envelope の実装。「指定時刻にちょうど0に到達する ramp」にすると裾が痩せて余韻が消える |
 | `triggerAttack` | 現在値から `(1-current)×attack` の時間で頂点へ | Tone と同じ。連打すると値が積み上がって滑らかにつながる（これが無いと連打が「カクカク」になる） |
 | `sustain: 0` | attack+decay で発音を止め、release を待たない | Tone.Synth / NoiseSynth の仕様 |
-| ディレイ | 100% wet（原音がディレイを通って遅れる）、間隔は **0.25秒固定** | v1 は `FeedbackDelay("8n")` を使いつつ `Tone.Transport.bpm` を設定していなかったため、プリセットの bpm に関係なく常に 120BPM の8分音符だった |
+| ディレイ間隔 | **0.25秒固定**。bpm に追従しない | v1 は `FeedbackDelay("8n")` を使いつつ `Tone.Transport.bpm` を設定していなかったため、プリセットの bpm に関係なく常に 120BPM の8分音符だった |
 | チェーン構成 | ノートごとに delay/filter/limiter を独立して作る | v1 と同じ。フィルタエンベロープがノート単位で効く |
 | detune | ノート内では1本の `ConstantSourceNode` を共有し、全オシレータへ配る | v1 の `Tone.Synth.detune`（Signal）と同じ。`pitchTime` が連打間隔より長いと、ランプの終端が数 hit 先に届いて急峻に跳ね上がる。譜面から想像する音ではないが、既存プリセットの「跳ね」はこれ |
 | 音量補正 | `masterVolume - log10(同時発音数) × 15` dB | v1 と同じ 15dB/decade |
@@ -52,6 +52,8 @@ v2 は Tone.js を外したが、**音は v1 を正とした**。以下は「Ton
 | `pitch` の無いノートを読み飛ばす | v1 のピアノロールが残した壊れたデータが実在する。v1 は描画も再生もしなかったので、既定値で補うと元データに無い音が鳴る。**ただし v1 は音量補正の分母には数えていた**ため、そういうノートを含むプリセットは v2 のほうが大きくなる |
 | `velocity` を音量に反映 | v1 は Note 型に持っていながら未使用（常に 1.0 相当）だった |
 | 音量補正の分母を「譜面上の総ノート数」→「同時発音数」 | 時間をずらして並べただけのメロディまで小さくなるのを避けるため。SE は同時発音が大半なので実測はほぼ一致する |
+| **原音をディレイに通さない（dry を戻した）** | v1 は `Tone.FeedbackDelay` を直列に挟んだ 100% wet で、**原音まで 0.25秒遅れて**いた。SE は押したら鳴るのが正しい。送り量を `delayFeedback` と同じ値にしてあるので、出力は旧実装を 0.25秒前にずらしたものと一致する（`filterEnvAmount` が 0 のプリセットはビット単位で完全一致することを確認済み）。**送り量を別パラメータにしてはいけない**。旧実装の反響は「原音 × `delayFeedback`」だったので、比が変われば既存の音が全部変わる（`delayFeedback: 0.05` の jump に 0.25 の反響を足したら、1発の音が2発に聞こえた） |
+| `filterEnvAmount` が実際に効くようになった | 上の副作用。旧実装ではフィルタのエンベロープが `t0` から開いて閉じ終わる頃に、遅れた原音がようやく届いていた。**このパラメータは値を変えても出力が1サンプルも変わらない死んだパラメータだった**。dry を戻して初めて効くようになったので、`filterEnvAmount` を持つプリセット（bomb / laser）は音が変わる |
 | ノイズを固定シードの PRNG + キャッシュに | v1（Tone.Noise）はバッファをキャッシュしつつ再生ごとにランダムな位置から鳴らすので、連続して鳴らすと音が変わっていた。SE ツールとしては「同じ設定なら同じ音」が正しい |
 
 ## 画面と操作
@@ -71,8 +73,6 @@ SE-COMPOSER        [WAV] [プリセット選択▼] [名前] [SAVE] [DEL] [デ�
 - **再生カーソル**は `requestAnimationFrame` から DOM の `transform` を直接書き換える。
   毎フレーム React の state を更新すると再描画が走るため。位置は `AudioContext.currentTime`
   基準で、`setTimeout` ではなくオーディオ時計に同期する
-- カーソルは **`DELAY_TIME` 分だけ引いた位置**を指す。原音もディレイラインを通る構成なので
-  譜面時刻のまま走らせるとノートの頭で音が鳴っていない。DAW のプラグイン遅延補償にあたる
 - `reset` はパラメータだけを初期値に戻し、ノートには触らない（ノート削除はゴミ箱アイコン）
 - **パラメータのロック**は、気に入った値を固定したままサンプルボタンを回すためのもの。
   `SeParams` の編集できる18項目すべてに錠アイコンを置いている。全部に付けているのは、
@@ -170,6 +170,14 @@ store には置いていない。**どちらも「今その画面で何を掴ん
   ここが崩れると描画とクリック座標がずれる
 - **`<button>` はフォントを継承しない**（`<label>` はする）。同じメニューに両方を並べると
   書体が食い違うので、`index.css` で `font-family: inherit` を当てている
+- **`BiquadFilter` の実効周波数が Nyquist を超えると破綻する**。`frequency` は
+  `clamp(cutoff, 20, 20000)` しているが、`filterEnvAmount` は `filter.detune` にランプするので、
+  実効周波数は `frequency × 2^(detune/1200)` になる。laser（cutoff 4000Hz）は
+  `filterEnvAmount: 3000` で 22627Hz に達し、出力が壊れた（peak 211dB を観測）。
+  **Web Audio の仕様ではここは clamp されるべきで、ブラウザは clamp するが
+  `node-web-audio-api` はしない。** 放置すると同じ JSON でも UI と CLI で音が違う。
+  `buildNoteChain` が `maxDetune` を計算して渡しているのはこのため。LFO が `filter` を
+  狙うときは `frequency` に加算されるので、その振幅も見込んで上限を出す
 - **canvas には CSS の `:hover` が効かない**。ノートのホバーは `mousemove` で対象を判定し、
   描画時に `globalAlpha` を落として表現している（ボタン類の hover と同じ 0.75）
 
@@ -185,6 +193,8 @@ node cli/render.mjs presets/ -d out/ --normalize    # 全プリセットを書�
 `[CLIPPED]` が出たら音量設計が壊れている。
 
 同じ JSON からは必ず同じ波形が出る（ノイズも決定的）ので、リグレッションはハッシュで見られる。
+**これは無条件には成り立たない。** フィルタの実効周波数の上限を `sampleRate` ではなく固定の
+20000Hz にしているのは、44.1kHz の CLI と 48kHz のブラウザで音を変えないため（下の罠を参照）。
 
 ```bash
 node cli/render.mjs presets/bomb.json -o out/a.wav && md5sum out/a.wav
@@ -201,5 +211,3 @@ node cli/render.mjs presets/bomb.json -o out/a.wav && md5sum out/a.wav
 - WAV は 16bit モノラル 44.1kHz 固定
 - CLI はリスト形式のJSONを渡しても `current` しか鳴らせない。`-d` で中の全プリセットを
   個別に書き出せると、UIのバックアップから一括生成ができる
-- 原音をディレイに通さない（dry を戻す）選択肢は保留中。音は素直になり遅延も消えるが、
-  既存プリセットの聞こえ方が変わる

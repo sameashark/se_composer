@@ -63,7 +63,7 @@ your-game/
 一括生成はこれだけ。
 
 ```bash
-node C:/Users/tkosh/claude-project/se-composer/cli/render.mjs sounds/ -d public/se/ --normalize
+node <SE-Composer>/cli/render.mjs sounds/ -d public/se/ --normalize
 ```
 
 `--normalize` を付けると全部のピークが -1dB に揃うので、SE同士の音量差が気にならなくなる。
@@ -80,7 +80,7 @@ node C:/Users/tkosh/claude-project/se-composer/cli/render.mjs sounds/ -d public/
 言葉で詰めるより耳とスライダーのほうが速い場面もある。
 
 ```bash
-cd C:/Users/tkosh/claude-project/se-composer
+cd <SE-Composer>
 npm run dev
 ```
 
@@ -95,7 +95,7 @@ GitHub Pages でも同じ画面が使える（ローカルに `npm run dev` す�
 ## よく使うコマンド
 
 ```bash
-SE=C:/Users/tkosh/claude-project/se-composer
+SE=<SE-Composer のディレクトリ>
 
 # 1音だけ試して鳴らす
 node $SE/cli/render.mjs sounds/jump.json -o out/jump.wav --play

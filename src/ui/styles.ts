@@ -135,6 +135,21 @@ export const chip: CSSProperties = {
   textTransform: "uppercase",
 };
 
+/** パラメータの錠アイコン。数値欄や select の右に並べる */
+export const lockToggle = (locked: boolean): CSSProperties => ({
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  background: "transparent",
+  // 解除時は主張させたくないが、border 色では暗すぎて見えない
+  color: locked ? color.accent : "#64748b",
+  border: "none",
+  padding: 0,
+  lineHeight: 0,
+  cursor: "pointer",
+  flexShrink: 0,
+});
+
 export const input: CSSProperties = {
   background: color.bg,
   color: color.text,

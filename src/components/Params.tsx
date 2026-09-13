@@ -1,5 +1,6 @@
 import React from "react";
 import { Activity, Clock, Settings, Zap } from "lucide-react";
+import { LockToggle } from "./LockToggle";
 import { Slider } from "./Slider";
 import { useStore } from "../store";
 import type { LfoTarget, OscillatorKind, SeParams } from "../core/engine.js";
@@ -14,11 +15,13 @@ interface ParamsProps {
 export const Params: React.FC<ParamsProps> = ({ onStart, onEnd }) => {
   const params = useStore((s) => s.params);
   const setParam = useStore((s) => s.setParam);
+  const lfoTargetLocked = useStore((s) => s.lockedParams.includes("lfoTarget"));
 
   const num = (key: keyof SeParams, label: string, min: number, max: number, step: number, digits = 2) => (
     <Slider
       key={key}
       label={label}
+      paramKey={key}
       value={params[key] as number}
       min={min}
       max={max}
@@ -62,16 +65,24 @@ export const Params: React.FC<ParamsProps> = ({ onStart, onEnd }) => {
           <span style={{ fontSize: 10, color: color.muted, letterSpacing: 1 }}>LFO TARGET</span>
           <select
             value={params.lfoTarget}
+            disabled={lfoTargetLocked}
             onChange={(e) => {
               onStart();
               setParam("lfoTarget", e.target.value as LfoTarget);
               onEnd();
             }}
-            style={{ ...select, fontSize: 11, padding: "4px 6px" }}
+            style={{
+              ...select,
+              fontSize: 11,
+              padding: "4px 6px",
+              opacity: lfoTargetLocked ? 0.45 : 1,
+              cursor: lfoTargetLocked ? "default" : "pointer",
+            }}
           >
             <option value="pitch">pitch</option>
             <option value="filter">filter</option>
           </select>
+          <LockToggle paramKey="lfoTarget" />
           {params.lfoTarget === "pitch" && params.oscillatorType === "noise" && (
             <span style={{ fontSize: 10, color: color.warn }}>noise では無効</span>
           )}
@@ -94,11 +105,17 @@ export const Params: React.FC<ParamsProps> = ({ onStart, onEnd }) => {
 
 interface OscillatorSelectProps {
   value: OscillatorKind;
+  disabled?: boolean;
   onChange: (value: OscillatorKind) => void;
 }
 
-export const OscillatorSelect: React.FC<OscillatorSelectProps> = ({ value, onChange }) => (
-  <select value={value} onChange={(e) => onChange(e.target.value as OscillatorKind)} style={select}>
+export const OscillatorSelect: React.FC<OscillatorSelectProps> = ({ value, disabled, onChange }) => (
+  <select
+    value={value}
+    disabled={disabled}
+    onChange={(e) => onChange(e.target.value as OscillatorKind)}
+    style={{ ...select, opacity: disabled ? 0.45 : 1, cursor: disabled ? "default" : "pointer" }}
+  >
     {OSCILLATOR_TYPES.map((o) => (
       <option key={o} value={o}>
         {o}

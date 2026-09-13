@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { PianoRoll } from "./PianoRoll";
 import type { PlaybackRange } from "./PianoRoll";
+import { LockToggle } from "./components/LockToggle";
 import { Params, OscillatorSelect } from "./components/Params";
 import { downloadBlob, play, renderWav } from "./audio/player";
 import type { Playback } from "./audio/player";
@@ -40,6 +41,8 @@ export default function App() {
   const presets = useStore((s) => s.presets);
   const past = useStore((s) => s.past);
   const future = useStore((s) => s.future);
+  const oscillatorLocked = useStore((s) => s.lockedParams.includes("oscillatorType"));
+  const bpmLocked = useStore((s) => s.lockedParams.includes("bpm"));
 
   const [presetName, setPresetName] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
@@ -197,6 +200,9 @@ export default function App() {
     }
     const preset = presets.find((p) => p.name === name);
     if (!preset) return;
+    // 保存済みプリセットは「その音をそのまま呼び出す」操作なので、ロックは全部解除する。
+    // 残すと呼び出した音と画面の値が食い違う
+    useStore.getState().clearLocks();
     // 手元のリストを切り替えただけなので通知しない（音が鳴ることが結果になる）
     applySnapshot({ ...DEFAULT_PARAMS, ...preset.params }, preset.notes.map((n) => ({ ...n })));
     setPresetName(preset.name);
@@ -266,7 +272,10 @@ export default function App() {
       // 単体プリセットでもリストは必ず置き換える。名前どおり「リスト読み込み」なので、
       // 中身が1件だからと更新を省くと一覧が変わらず読み込めていないように見える
       if (loaded.length > 0) store.setPresets(loaded);
-      if (current) applySnapshot(current.params, current.notes, silent);
+      if (current) {
+        store.clearLocks(); // プリセット選択と同じ扱い
+        applySnapshot(current.params, current.notes, silent);
+      }
       setPresetName(loaded.length === 1 ? loaded[0].name : "");
       notify(
         loaded.length > 0
@@ -387,7 +396,7 @@ export default function App() {
                   setDataMenuOpen(false);
                 }}
                 disabled={notes.length === 0}
-                title="今の音だけを単体プリセットとして保存する。CLI がそのまま読める形式"
+                title="今の音だけを単体プリセットとして保存する"
               >
                 <Download size={14} /> この音の書き出し
               </button>
@@ -452,12 +461,14 @@ export default function App() {
           <Waves size={14} color={S.color.muted} />
           <OscillatorSelect
             value={params.oscillatorType}
+            disabled={oscillatorLocked}
             onChange={(v) => {
               beginEdit();
               useStore.getState().setParam("oscillatorType", v);
               void playCurrent();
             }}
           />
+          <LockToggle paramKey="oscillatorType" />
         </div>
         <div style={S.group}>
           <Music size={14} color={S.color.muted} />
@@ -466,6 +477,7 @@ export default function App() {
             value={params.bpm}
             min={40}
             max={300}
+            disabled={bpmLocked}
             onFocus={beginEdit}
             onChange={(e) => useStore.getState().setParam("bpm", Number(e.target.value) || 120)}
             onKeyDown={(e) => {
@@ -474,9 +486,10 @@ export default function App() {
                 endEdit();
               }
             }}
-            style={{ ...S.input, width: 64 }}
+            style={{ ...S.input, width: 64, opacity: bpmLocked ? 0.45 : 1 }}
           />
           <span style={{ fontSize: 10, color: S.color.muted }}>BPM</span>
+          <LockToggle paramKey="bpm" />
         </div>
       </div>
 

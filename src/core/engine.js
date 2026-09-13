@@ -60,7 +60,7 @@ const stepTime = (bpm) => 60 / bpm / 4;
  * 0.25 秒固定だった。bpm に追従させると低速なプリセットでエコーの位置が大きくずれるので、
  * 旧版に合わせて固定する。
  */
-const DELAY_TIME = 60 / 120 / 2;
+export const DELAY_TIME = 60 / 120 / 2;
 
 /** Tone.Param の最小出力値 */
 const MIN_OUTPUT = 1e-5;

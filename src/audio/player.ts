@@ -14,8 +14,15 @@ export async function getContext(): Promise<AudioContext> {
   return sharedContext;
 }
 
+/** 生成済みなら AudioContext を同期で返す。再生位置の追従など毎フレームの参照用 */
+export function peekContext(): AudioContext | null {
+  return sharedContext;
+}
+
 export interface Playback {
   stop: () => void;
+  /** 先頭のノートが鳴り出す時刻（AudioContext の currentTime 基準） */
+  startAt: number;
   /** 鳴り終わる時刻（AudioContext の currentTime 基準） */
   endTime: number;
   /** 呼び出し時点から鳴り終わるまでのミリ秒 */
@@ -44,7 +51,7 @@ export async function play(params: SeParams, notes: SeNote[]): Promise<Playback>
     setTimeout(() => gate.disconnect(), 120);
   };
 
-  return { stop, endTime, durationMs: Math.max(0, (endTime - ctx.currentTime) * 1000) };
+  return { stop, startAt, endTime, durationMs: Math.max(0, (endTime - ctx.currentTime) * 1000) };
 }
 
 export interface RenderOptions {

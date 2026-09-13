@@ -1,24 +1,28 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ChevronDown,
   Download,
-  FileDown,
-  FileUp,
+  FilePlus,
   Music,
   Play,
   Redo2,
+  RotateCcw,
   Save,
   Shuffle,
   Square,
   Trash2,
   Undo2,
+  Upload,
   Waves,
 } from "lucide-react";
 import { PianoRoll } from "./PianoRoll";
+import type { PlaybackRange } from "./PianoRoll";
 import { Params, OscillatorSelect } from "./components/Params";
 import { downloadBlob, play, renderWav } from "./audio/player";
 import type { Playback } from "./audio/player";
-import { normalizePreset } from "./core/engine.js";
+import { mergePresets, parsePresetFile } from "./presetFile";
+import type { ParsedPresetFile } from "./presetFile";
 import type { SeNote, SeParams } from "./core/engine.js";
 import { makeSample, SAMPLE_KINDS } from "./randomize";
 import { DEFAULT_PARAMS, useStore } from "./store";
@@ -42,7 +46,10 @@ export default function App() {
   const [isExporting, setIsExporting] = useState(false);
   const [toast, setToast] = useState<{ message: string; ok: boolean } | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [playback, setPlayback] = useState<PlaybackRange | null>(null);
+  const [dataMenuOpen, setDataMenuOpen] = useState(false);
 
+  const dataMenuRef = useRef<HTMLDivElement>(null);
   const playbackRef = useRef<Playback | null>(null);
   const stopTimerRef = useRef<number | null>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -58,6 +65,7 @@ export default function App() {
     playbackRef.current = null;
     if (stopTimerRef.current) window.clearTimeout(stopTimerRef.current);
     setIsPlaying(false);
+    setPlayback(null);
   }, []);
 
   /** 常に store の最新値で鳴らす（スライダー操作直後でも取りこぼさない） */
@@ -66,13 +74,15 @@ export default function App() {
     const { params: p, notes: n } = useStore.getState();
     if (n.length === 0) return;
     try {
-      const playback = await play(p, n);
-      playbackRef.current = playback;
+      const started = await play(p, n);
+      playbackRef.current = started;
       setIsPlaying(true);
+      setPlayback({ startAt: started.startAt, endAt: started.endTime });
       stopTimerRef.current = window.setTimeout(() => {
         playbackRef.current = null;
         setIsPlaying(false);
-      }, playback.durationMs + 120);
+        setPlayback(null);
+      }, started.durationMs + 120);
     } catch (e) {
       notify("再生できません", false);
     }
@@ -88,12 +98,12 @@ export default function App() {
   }, [playCurrent]);
 
   const applySnapshot = useCallback(
-    (nextParams: SeParams, nextNotes?: SeNote[]) => {
+    (nextParams: SeParams, nextNotes?: SeNote[], options?: { play?: boolean }) => {
       const store = useStore.getState();
       store.pushHistory();
       store.setParams(nextParams);
       if (nextNotes) store.setNotes(nextNotes);
-      void playCurrent();
+      if (options?.play !== false) void playCurrent();
     },
     [playCurrent]
   );
@@ -121,6 +131,30 @@ export default function App() {
   }, [playCurrent]);
 
   useEffect(() => () => stopPlayback(), [stopPlayback]);
+
+  // データメニューは外側クリックと Esc で閉じる
+  useEffect(() => {
+    if (!dataMenuOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (!dataMenuRef.current?.contains(e.target as Node)) setDataMenuOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDataMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [dataMenuOpen]);
+
+  /** パラメータだけを初期値に戻す。ノートには触らない */
+  const resetParams = () => {
+    applySnapshot({ ...DEFAULT_PARAMS });
+    setPresetName("");
+    notify("パラメータを初期値に戻しました");
+  };
 
   const handleSample = (kind: (typeof SAMPLE_KINDS)[number] | "random") => {
     const { params: nextParams, note } = makeSample(kind);
@@ -163,9 +197,9 @@ export default function App() {
     }
     const preset = presets.find((p) => p.name === name);
     if (!preset) return;
+    // 手元のリストを切り替えただけなので通知しない（音が鳴ることが結果になる）
     applySnapshot({ ...DEFAULT_PARAMS, ...preset.params }, preset.notes.map((n) => ({ ...n })));
     setPresetName(preset.name);
-    notify(`読込: ${preset.name}`);
   };
 
   const deletePreset = () => {
@@ -198,54 +232,64 @@ export default function App() {
     notify(`${name}.json を書き出しました`);
   };
 
-  const importJson = (event: React.ChangeEvent<HTMLInputElement>) => {
+  /** pitch を持たないノートは読み飛ばされる。黙って消えると気付けないので件数を出す */
+  const skippedNote = (count: number) => (count > 0 ? `（pitch が無いノート ${count} 件を除外）` : "");
+
+  const readPresetFile = (event: React.ChangeEvent<HTMLInputElement>, handle: (parsed: ParsedPresetFile) => void) => {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
+      let parsed: ParsedPresetFile | null;
       try {
-        const data = JSON.parse(String(reader.result));
-        const store = useStore.getState();
-
-        // pitch を持たないノートは読み飛ばされる。黙って消えると気付けないので件数を出す
-        const skippedNote = (count: number) => (count > 0 ? `（pitch が無いノート ${count} 件を除外）` : "");
-
-        // CLI が吐く単体プリセット（{name, params, notes}）もそのまま読める
-        if (data && !Array.isArray(data) && data.params) {
-          const { params: p, notes: n, skipped } = normalizePreset(data);
-          applySnapshot(p, n);
-          if (typeof data.name === "string") setPresetName(data.name);
-          notify(`プリセットを読み込みました${data.name ? `: ${data.name}` : ""}${skippedNote(skipped)}`);
-          return;
-        }
-
-        const rawPresets = Array.isArray(data) ? data : data?.history;
-        if (Array.isArray(rawPresets)) {
-          let skippedTotal = 0;
-          const cleaned: StoredPreset[] = rawPresets
-            .filter((p: unknown): p is { name: string } => !!p && typeof (p as StoredPreset).name === "string")
-            .map((p) => {
-              const { params: pp, notes: nn, skipped } = normalizePreset(p);
-              skippedTotal += skipped;
-              return { version: 1, name: p.name, params: pp, notes: nn };
-            });
-          store.setPresets(cleaned);
-          if (data?.current) {
-            const { params: p, notes: n, skipped } = normalizePreset(data.current);
-            skippedTotal += skipped;
-            applySnapshot(p, n);
-          }
-          notify(`${cleaned.length} 件のプリセットを読み込みました${skippedNote(skippedTotal)}`);
-          return;
-        }
-        notify("読み込める形式ではありません", false);
+        parsed = parsePresetFile(JSON.parse(String(reader.result)));
       } catch {
         notify("JSON の解析に失敗しました", false);
+        return;
       }
+      if (!parsed) {
+        notify("プリセットの形式ではありません", false);
+        return;
+      }
+      handle(parsed);
     };
     reader.readAsText(file);
   };
+
+  /** リストを置き換える */
+  const importJson = (event: React.ChangeEvent<HTMLInputElement>) =>
+    readPresetFile(event, ({ presets: loaded, current, skipped }) => {
+      const store = useStore.getState();
+      // ファイルを開いただけで音が鳴るのは押しつけがましいので、読み込みでは再生しない
+      const silent = { play: false };
+      // 単体プリセットでもリストは必ず置き換える。名前どおり「リスト読み込み」なので、
+      // 中身が1件だからと更新を省くと一覧が変わらず読み込めていないように見える
+      if (loaded.length > 0) store.setPresets(loaded);
+      if (current) applySnapshot(current.params, current.notes, silent);
+      setPresetName(loaded.length === 1 ? loaded[0].name : "");
+      notify(
+        loaded.length > 0
+          ? `${loaded.length} 件のプリセットを読み込みました${skippedNote(skipped)}`
+          : `現在の音を読み込みました${skippedNote(skipped)}`
+      );
+    });
+
+  /** 今のリストの末尾に追加する */
+  const appendJson = (event: React.ChangeEvent<HTMLInputElement>) =>
+    readPresetFile(event, ({ presets: loaded, skipped }) => {
+      if (loaded.length === 0) {
+        notify("追加できるプリセットがありません", false);
+        return;
+      }
+      const store = useStore.getState();
+      const { presets: merged, added, renamed } = mergePresets(store.presets, loaded);
+      store.setPresets(merged);
+      notify(
+        `${added} 件を追加しました（計 ${merged.length} 件）` +
+          `${renamed > 0 ? `／名前が重複した ${renamed} 件はリネーム` : ""}${skippedNote(skipped)}`
+      );
+    });
 
   const clearNotes = () =>
     setConfirm({
@@ -279,38 +323,129 @@ export default function App() {
         </div>
       )}
 
-      <h1 style={{ fontSize: 18, letterSpacing: 3, margin: "0 0 16px" }}>SE-COMPOSER</h1>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "flex-end",
+          flexWrap: "wrap",
+          gap: 8,
+          margin: "0 0 10px",
+        }}
+      >
+        <h1 style={{ fontSize: 18, letterSpacing: 3, margin: 0, marginRight: "auto" }}>SE-COMPOSER</h1>
 
-      <PianoRoll />
-
-      <div style={S.row}>
-        <button style={S.button} onClick={() => (isPlaying ? stopPlayback() : void playCurrent())}>
-          {isPlaying ? <Square size={16} /> : <Play size={16} />} {isPlaying ? "STOP" : "PLAY"}
-        </button>
         <button
-          style={{ ...S.button, background: S.color.ok }}
+          style={{ ...S.button, background: S.color.ok, padding: "8px 14px", fontSize: 12 }}
           onClick={() => void handleDownload()}
           disabled={isExporting || notes.length === 0}
         >
           <Download size={16} /> {isExporting ? "EXPORTING..." : "WAV"}
         </button>
+
+        <select value={presetName} onChange={(e) => loadPreset(e.target.value)} style={{ ...S.select, minWidth: 170 }}>
+          <option value="">-- 保存済みプリセット --</option>
+          {presets.map((p) => (
+            <option key={p.name} value={p.name}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+
+        <input
+          type="text"
+          placeholder="プリセット名"
+          value={presetName}
+          onChange={(e) => setPresetName(e.target.value)}
+          style={{ ...S.input, width: 150 }}
+        />
+        <button style={{ ...S.button, padding: "8px 12px", fontSize: 11 }} onClick={savePreset}>
+          <Save size={13} /> SAVE
+        </button>
         <button
-          style={{ ...S.button, background: S.color.panel, border: `1px solid ${S.color.border}` }}
-          onClick={exportCurrentPreset}
-          disabled={notes.length === 0}
-          title="この音だけをプリセットJSONで保存（CLI がそのまま読める）"
+          style={{ ...S.button, padding: "8px 12px", fontSize: 11, background: S.color.danger }}
+          onClick={deletePreset}
         >
-          <Download size={16} /> JSON
+          DEL
+        </button>
+
+        <div ref={dataMenuRef} style={{ position: "relative" }}>
+          <button
+            style={{ ...S.labeledButton, padding: "7px 8px 7px 10px" }}
+            onClick={() => setDataMenuOpen((open) => !open)}
+            title="JSON の書き出し・読み込み"
+          >
+            データ <ChevronDown size={14} />
+          </button>
+          {dataMenuOpen && (
+            <div style={S.menu}>
+              <button
+                className="menu-item"
+                style={S.menuItem}
+                onClick={() => {
+                  exportCurrentPreset();
+                  setDataMenuOpen(false);
+                }}
+                disabled={notes.length === 0}
+                title="今の音だけを単体プリセットとして保存する。CLI がそのまま読める形式"
+              >
+                <Download size={14} /> この音の書き出し
+              </button>
+              <button
+                className="menu-item"
+                style={S.menuItem}
+                onClick={() => {
+                  exportJson();
+                  setDataMenuOpen(false);
+                }}
+                title="保存済みプリセット全部を1ファイルに書き出す"
+              >
+                <Download size={14} /> リスト書き出し
+              </button>
+              <label className="menu-item" style={S.menuItem} title="読み込んだ内容でリストを置き換える">
+                <Upload size={14} /> リスト読み込み
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={(e) => {
+                    importJson(e);
+                    setDataMenuOpen(false);
+                  }}
+                  style={{ display: "none" }}
+                />
+              </label>
+              <label className="menu-item" style={S.menuItem} title="今のリストの末尾に追加する（マージ）">
+                <FilePlus size={14} /> リストに追加
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={(e) => {
+                    appendJson(e);
+                    setDataMenuOpen(false);
+                  }}
+                  style={{ display: "none" }}
+                />
+              </label>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <PianoRoll playback={playback} />
+
+      <div style={S.row}>
+        <button style={S.button} onClick={() => (isPlaying ? stopPlayback() : void playCurrent())}>
+          {isPlaying ? <Square size={16} /> : <Play size={16} />} {isPlaying ? "STOP" : "PLAY"}
         </button>
         <div style={{ display: "flex", gap: 4 }}>
           <button style={S.iconButton} onClick={() => { useStore.getState().undo(); void playCurrent(); }} disabled={past.length === 0} title="元に戻す (Ctrl+Z)">
-            <Undo2 size={16} />
+            <Undo2 size={18} />
           </button>
           <button style={S.iconButton} onClick={() => { useStore.getState().redo(); void playCurrent(); }} disabled={future.length === 0} title="やり直す (Ctrl+Y)">
-            <Redo2 size={16} />
+            <Redo2 size={18} />
           </button>
           <button style={S.iconButton} onClick={clearNotes} title="ノートを消去">
-            <Trash2 size={16} />
+            <Trash2 size={18} />
           </button>
         </div>
         <div style={S.group}>
@@ -349,41 +484,9 @@ export default function App() {
         <button style={{ ...S.chip, borderColor: S.color.accent, color: S.color.accent }} onClick={() => handleSample("random")}>
           <Shuffle size={12} /> random
         </button>
-      </div>
-
-      <div style={S.row}>
-        <div style={S.group}>
-          <select value={presetName} onChange={(e) => loadPreset(e.target.value)} style={{ ...S.select, minWidth: 180 }}>
-            <option value="">-- 保存済みプリセット --</option>
-            {presets.map((p) => (
-              <option key={p.name} value={p.name}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <button style={S.iconButton} onClick={exportJson} title="JSON を書き出す">
-            <FileUp size={14} />
-          </button>
-          <label style={{ ...S.iconButton, cursor: "pointer" }} title="JSON を読み込む">
-            <FileDown size={14} />
-            <input type="file" accept=".json" onChange={importJson} style={{ display: "none" }} />
-          </label>
-        </div>
-        <div style={S.group}>
-          <input
-            type="text"
-            placeholder="プリセット名"
-            value={presetName}
-            onChange={(e) => setPresetName(e.target.value)}
-            style={{ ...S.input, width: 160 }}
-          />
-          <button style={{ ...S.button, padding: "8px 12px", fontSize: 11 }} onClick={savePreset}>
-            <Save size={13} /> SAVE
-          </button>
-          <button style={{ ...S.button, padding: "8px 12px", fontSize: 11, background: S.color.danger }} onClick={deletePreset}>
-            DEL
-          </button>
-        </div>
+        <button style={S.chip} onClick={resetParams} title="パラメータだけを初期値に戻す（ノートは残る）">
+          <RotateCcw size={12} /> reset
+        </button>
       </div>
 
       <Params onStart={beginEdit} onEnd={endEdit} />

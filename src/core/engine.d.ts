@@ -42,6 +42,8 @@ export interface Preset {
 
 export declare const DEFAULT_PARAMS: SeParams;
 export declare const OSCILLATOR_TYPES: OscillatorKind[];
+/** ディレイ時間（秒）。原音もここを通るので、発音全体がこの分だけ遅れる */
+export declare const DELAY_TIME: number;
 
 export declare function noteToFreq(name: string): number;
 export declare function timeToStep(time: string | number): number;

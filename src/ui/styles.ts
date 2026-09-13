@@ -65,9 +65,59 @@ export const iconButton: CSSProperties = {
   color: color.muted,
   border: `1px solid ${color.border}`,
   borderRadius: 6,
-  padding: 8,
+  // 枠に対してアイコンが小さいと矢印や+の向きが読めないので、余白は詰める
+  padding: 4,
   cursor: "pointer",
 };
+
+/** アイコン＋短いラベルのボタン。ファイル操作のように機能名が要るもの向け */
+export const labeledButton: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  background: "transparent",
+  color: color.muted,
+  border: `1px solid ${color.border}`,
+  borderRadius: 6,
+  padding: "5px 10px 5px 7px",
+  fontSize: 11,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
+
+export const menu: CSSProperties = {
+  position: "absolute",
+  top: "calc(100% + 4px)",
+  right: 0,
+  minWidth: 180,
+  background: color.panel,
+  border: `1px solid ${color.border}`,
+  borderRadius: 8,
+  padding: 4,
+  boxShadow: "0 8px 24px rgba(2, 6, 23, 0.6)",
+  zIndex: 20,
+};
+
+export const menuItem: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  width: "100%",
+  background: "transparent",
+  color: color.text,
+  border: "none",
+  borderRadius: 6,
+  padding: "8px 10px",
+  // button と label でフォントがばらつかないよう明示する
+  fontFamily: "inherit",
+  fontSize: 12,
+  lineHeight: 1.4,
+  textAlign: "left",
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+  boxSizing: "border-box",
+};
+
 
 export const chip: CSSProperties = {
   display: "inline-flex",

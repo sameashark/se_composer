@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "./store";
 import { newNoteId } from "./randomize";
+import { peekContext } from "./audio/player";
+import { DELAY_TIME } from "./core/engine.js";
 
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const LOW_OCTAVE = 2;
@@ -38,8 +40,19 @@ const timeToStep = (time: string | number): number => {
 
 const stepToTime = (step: number) => `${Math.floor(step / 16)}:${Math.floor((step % 16) / 4)}:${step % 4}`;
 
-export const PianoRoll: React.FC = () => {
+/** 再生中の区間（AudioContext の currentTime 基準） */
+export interface PlaybackRange {
+  startAt: number;
+  endAt: number;
+}
+
+interface PianoRollProps {
+  playback: PlaybackRange | null;
+}
+
+export const PianoRoll: React.FC<PianoRollProps> = ({ playback }) => {
   const notes = useStore((s) => s.notes);
+  const bpm = useStore((s) => s.params.bpm);
   const addNote = useStore((s) => s.addNote);
   const updateNote = useStore((s) => s.updateNote);
   const removeNote = useStore((s) => s.removeNote);
@@ -47,10 +60,12 @@ export const PianoRoll: React.FC = () => {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const playheadRef = useRef<HTMLDivElement>(null);
   const notesRef = useRef(notes);
   notesRef.current = notes;
 
   const [dragId, setDragId] = useState<string | null>(null);
+  const [hoverId, setHoverId] = useState<string | null>(null);
   const [showSharps, setShowSharps] = useState(false);
   const lastTapRef = useRef(0);
   const lockRef = useRef(false);
@@ -181,12 +196,55 @@ export const PianoRoll: React.FC = () => {
       if (pitchIndex < 0) continue; // 表示範囲外（件数は下に出す）
       const x = timeToStep(note.time) * CELL_W + 1;
       const y = rowOf(pitchIndex) * ROW_H + 1;
+      // canvas には CSS の :hover が効かないので、ボタン類と同じ 0.75 を自前で当てる
+      ctx.globalAlpha = note.id === hoverId ? 0.75 : 1;
       ctx.fillStyle = `rgba(59, 130, 246, ${0.35 + 0.55 * Math.min(1, note.velocity)})`;
       ctx.strokeStyle = note.id === dragId ? "#f8fafc" : "#60a5fa";
       ctx.fillRect(x, y, note.width * CELL_W - 2, ROW_H - 2);
       ctx.strokeRect(x, y, note.width * CELL_W - 2, ROW_H - 2);
     }
-  }, [notes, dragId, pitches, canvasH, rowOf]);
+    ctx.globalAlpha = 1;
+  }, [notes, dragId, hoverId, pitches, canvasH, rowOf]);
+
+  // 再生カーソル。毎フレーム state を更新すると再描画が走るので、DOM を直接動かす
+  useEffect(() => {
+    const el = playheadRef.current;
+    if (!el) return;
+    const hide = () => {
+      el.style.display = "none";
+    };
+    if (!playback) {
+      hide();
+      return;
+    }
+
+    const stepSec = 60 / bpm / 4;
+    let raf = 0;
+    const tick = () => {
+      const ctx = peekContext();
+      if (!ctx) {
+        hide();
+        return;
+      }
+      // 原音もディレイラインを通るため発音全体が DELAY_TIME 遅れる。
+      // カーソルを譜面時刻のまま走らせるとノートの頭で音が鳴っておらず気持ち悪いので、
+      // 実際に聞こえている位置に合わせる（DAW のプラグイン遅延補償にあたる）
+      const elapsed = ctx.currentTime - playback.startAt - DELAY_TIME;
+      const step = elapsed / stepSec;
+      if (elapsed < 0 || step > STEPS) hide();
+      else {
+        el.style.display = "block";
+        el.style.transform = `translateX(${step * CELL_W}px)`;
+      }
+      if (ctx.currentTime < playback.endAt) raf = requestAnimationFrame(tick);
+      else hide();
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      hide();
+    };
+  }, [playback, bpm]);
 
   const outOfRange = notes.filter((n) => pitches.indexOf(n.pitch) < 0);
 
@@ -242,6 +300,7 @@ export const PianoRoll: React.FC = () => {
               );
             })}
         </div>
+        <div style={{ position: "relative", flexShrink: 0 }}>
         <canvas
           ref={canvasRef}
           width={CANVAS_W}
@@ -250,6 +309,12 @@ export const PianoRoll: React.FC = () => {
             e.preventDefault();
             startAction(e.clientX, e.clientY, false);
           }}
+          onMouseMove={(e) => {
+            if (dragId) return;
+            const pos = posFromEvent(e.clientX, e.clientY);
+            setHoverId(pos ? hitTest(pos.step, pos.pitch)?.id ?? null : null);
+          }}
+          onMouseLeave={() => setHoverId(null)}
           onContextMenu={(e) => {
             e.preventDefault();
             const pos = posFromEvent(e.clientX, e.clientY);
@@ -284,8 +349,24 @@ export const PianoRoll: React.FC = () => {
           onTouchEnd={() => setDragId(null)}
           // CSS サイズを属性と一致させる。auto のままだと flex や画面幅で伸縮し、
           // 描画スケールとクリック座標の計算がずれる
-          style={{ cursor: "pointer", display: "block", width: CANVAS_W, height: canvasH, flexShrink: 0 }}
+          style={{ cursor: "pointer", display: "block", width: CANVAS_W, height: canvasH }}
         />
+          <div
+            ref={playheadRef}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: 2,
+              height: canvasH,
+              background: "#f8fafc",
+              opacity: 0.8,
+              pointerEvents: "none",
+              display: "none",
+              willChange: "transform",
+            }}
+          />
+        </div>
       </div>
 
       <div

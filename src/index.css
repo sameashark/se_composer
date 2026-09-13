@@ -7,3 +7,29 @@ body {
   /* src/ui/styles.ts の color.bg と同じ値。ページ全面をコンテンツと同色にする */
   background: #0f172a;
 }
+
+/* button や input はフォントを継承しないので、明示的に揃える */
+button,
+input,
+select,
+textarea,
+label {
+  font-family: inherit;
+}
+
+/* hover はインラインスタイルで書けないのでここに置く */
+button:not(:disabled),
+.menu-item {
+  transition: opacity 0.12s;
+}
+
+button:not(:disabled):hover,
+.menu-item:hover {
+  opacity: 0.75;
+}
+
+button:disabled,
+.menu-item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

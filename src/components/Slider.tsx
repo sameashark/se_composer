@@ -38,7 +38,14 @@ export const Slider: React.FC<SliderProps> = ({
           const v = Number(e.target.value);
           if (!Number.isNaN(v)) onChange(Math.min(max, Math.max(min, v)));
         }}
-        onBlur={onEnd}
+        // blur で鳴らすと、PLAY ボタンを押した瞬間の blur が先に再生を始めてしまい、
+        // 続くクリックが STOP と解釈されて鳴らない。確定は Enter に任せる
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            onEnd();
+          }
+        }}
         style={{
           width: 68,
           background: color.bg,

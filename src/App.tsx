@@ -468,7 +468,12 @@ export default function App() {
             max={300}
             onFocus={beginEdit}
             onChange={(e) => useStore.getState().setParam("bpm", Number(e.target.value) || 120)}
-            onBlur={endEdit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                endEdit();
+              }
+            }}
             style={{ ...S.input, width: 64 }}
           />
           <span style={{ fontSize: 10, color: S.color.muted }}>BPM</span>

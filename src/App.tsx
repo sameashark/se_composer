@@ -232,12 +232,16 @@ export default function App() {
       return;
     }
     const store = useStore.getState();
+    // 新規は末尾（JSON の「リストに追加」と揃える）、上書きは位置を動かさない
+    const at = store.presets.findIndex((p) => p.name === name);
     const write = () => {
       const next: StoredPreset = { version: 1, name, params: { ...params }, notes: notes.map((n) => ({ ...n })) };
-      store.setPresets([next, ...store.presets.filter((p) => p.name !== name)]);
+      store.setPresets(
+        at < 0 ? [...store.presets, next] : store.presets.map((p, i) => (i === at ? next : p))
+      );
       setPresetName(name);
     };
-    if (!store.presets.some((p) => p.name === name)) {
+    if (at < 0) {
       write();
       notify(`保存: ${name}`);
       return;

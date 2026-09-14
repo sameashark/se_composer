@@ -8,8 +8,6 @@
 - CLI: [`cli/render.mjs`](cli/render.mjs) — パラメータJSON → WAV
 - UI: React + Vite
 
-ドキュメント: [設計メモ](doc/architecture.md)（次に手を入れるとき用） / [Claude Code から音を作る](doc/usage.md)
-
 ## 使い方
 
 ### ブラウザ

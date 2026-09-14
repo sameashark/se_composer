@@ -267,11 +267,11 @@ node cli/render.mjs presets/bomb.json -o out/a.wav && md5sum out/a.wav
 **ただし自分では音を聴けない。数値は「潰れた・小さい・高域寄り」しか判定できず、
 音色や余韻の良し悪しは人が聴くしかない。** 音に関わる変更は必ず聴いてもらうこと。
 
-## 積み残し / 今後やるなら
+## 今の制約
 
-- ESLint が無い（v1 の設定は react-scripts 依存で機能していなかったため削除した）
-- テストが無い。`noteToFreq` / `timeToStep` / `normalizePreset` / `parsePresetFile` /
-  `mergePresets` あたりは純粋関数なので入れやすい。実際そこにバグが出た
-- WAV は 16bit モノラル 44.1kHz 固定
-- CLI はリスト形式のJSONを渡しても `current` しか鳴らせない。`-d` で中の全プリセットを
-  個別に書き出せると、UIのバックアップから一括生成ができる
+- **WAV は 16bit モノラル 44.1kHz 固定**
+- **CLI はリスト形式のJSONを渡しても `current` しか鳴らせない**
+- テストが無い。ESLint も無い（v1 の設定は react-scripts 依存で機能していなかったため削除した）
+
+次に何をやるかと、検討したうえで**入れないと決めたもの**は `doc/progress/HANDOFF.md`
+に置いてある（ここには書かない）。

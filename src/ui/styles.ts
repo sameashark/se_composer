@@ -141,6 +141,13 @@ export const chip: CSSProperties = {
   textTransform: "uppercase",
 };
 
+/**
+ * アイコンの左右反転。lucide の file-input / file-output は紙が右・矢印が左に描かれていて、
+ * そのままだと「書き出しなのに矢印が左を向く」ことになる。反転すると紙が左に来て、
+ * 手元（左）から外（右）へ出る＝書き出し、外から手元へ入る＝読み込み、と向きが揃う
+ */
+export const flipX: CSSProperties = { transform: "scaleX(-1)" };
+
 /** パラメータの錠アイコン。数値欄や select の右に並べる */
 export const lockToggle = (locked: boolean): CSSProperties => ({
   display: "inline-flex",

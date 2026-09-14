@@ -4,7 +4,10 @@ import {
   ChevronDown,
   CircleHelp,
   Download,
-  FilePlus,
+  FileOutput,
+  FolderInput,
+  FolderOutput,
+  FolderPlus,
   Music,
   Play,
   Redo2,
@@ -16,7 +19,6 @@ import {
   Square,
   Trash2,
   Undo2,
-  Upload,
   Waves,
 } from "lucide-react";
 import { PianoRoll } from "./PianoRoll";
@@ -427,7 +429,7 @@ export default function App() {
                 disabled={notes.length === 0}
                 title="今の音だけを単体プリセットとして保存する"
               >
-                <Download size={14} /> この音の書き出し
+                <FileOutput size={14} style={S.flipX} /> この音の書き出し
               </button>
               <button
                 className="menu-item"
@@ -438,10 +440,10 @@ export default function App() {
                 }}
                 title="保存済みプリセット全部を1ファイルに書き出す"
               >
-                <Download size={14} /> リスト書き出し
+                <FolderOutput size={14} style={S.flipX} /> リスト書き出し
               </button>
               <label className="menu-item" style={S.menuItem} title="読み込んだ内容でリストを置き換える">
-                <Upload size={14} /> リスト読み込み
+                <FolderInput size={14} style={S.flipX} /> リスト読み込み
                 <input
                   type="file"
                   accept=".json"
@@ -453,7 +455,7 @@ export default function App() {
                 />
               </label>
               <label className="menu-item" style={S.menuItem} title="今のリストの末尾に追加する（マージ）">
-                <FilePlus size={14} /> リストに追加
+                <FolderPlus size={14} /> リストに追加
                 <input
                   type="file"
                   accept=".json"

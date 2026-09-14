@@ -20,6 +20,12 @@ export const container: CSSProperties = {
   padding: "20px 16px 48px",
   boxSizing: "border-box",
   maxWidth: 1100,
+  // レスポンシブにしない。これを下回るとパラメータが4列に並ばず、
+  // ピアノロールと波形がそれぞれ内部で横スクロールして時間軸がずれる。
+  // 狭い画面では body ごと横に流し、両者が必ず同じだけ動くようにする
+  //   パラメータ4列  240x4 + gap 12x3 = 996px
+  //   ピアノロール   KEY_W 46 + CANVAS_W 896 + border 2 = 944px
+  minWidth: 1030,
   margin: "0 auto",
 };
 
@@ -28,8 +34,8 @@ export const row: CSSProperties = {
   flexWrap: "wrap",
   alignItems: "center",
   justifyContent: "center",
-  gap: 8,
-  margin: "12px 0",
+  gap: 18,
+  margin: "14px 0",
 };
 
 export const group: CSSProperties = {

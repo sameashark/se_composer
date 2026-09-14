@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   ChevronDown,
+  CircleHelp,
   Download,
   FilePlus,
   Music,
@@ -9,7 +10,9 @@ import {
   Redo2,
   RotateCcw,
   Save,
+  Settings,
   Shuffle,
+  Sparkles,
   Square,
   Trash2,
   Undo2,
@@ -18,7 +21,9 @@ import {
 } from "lucide-react";
 import { PianoRoll } from "./PianoRoll";
 import type { PlaybackRange } from "./PianoRoll";
+import { Waveform } from "./Waveform";
 import { LockToggle } from "./components/LockToggle";
+import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { Params, OscillatorSelect } from "./components/Params";
 import { downloadBlob, play, renderWav } from "./audio/player";
 import type { Playback } from "./audio/player";
@@ -28,6 +33,7 @@ import type { SeNote, SeParams } from "./core/engine.js";
 import { makeSample, SAMPLE_KINDS } from "./randomize";
 import { DEFAULT_PARAMS, useStore } from "./store";
 import type { StoredPreset } from "./store";
+import { useUiSetting } from "./ui/settings";
 import * as S from "./ui/styles";
 
 interface Confirm {
@@ -38,6 +44,8 @@ interface Confirm {
 export default function App() {
   const params = useStore((s) => s.params);
   const notes = useStore((s) => s.notes);
+  // ♯のノートがある譜面で行を隠すと編集できなくなるため、その場合は常に表示される
+  const hasSharpNote = notes.some((n) => n.pitch.includes("#"));
   const presets = useStore((s) => s.presets);
   const past = useStore((s) => s.past);
   const future = useStore((s) => s.future);
@@ -51,8 +59,14 @@ export default function App() {
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [playback, setPlayback] = useState<PlaybackRange | null>(null);
   const [dataMenuOpen, setDataMenuOpen] = useState(false);
+  // 一度開いたら閉じるまで出しっぱなし。毎回使うものではないので既定は閉じている
+  const [samplesOpen, setSamplesOpen] = useUiSetting("samples");
+  const [showSharps, setShowSharps] = useUiSetting("sharps");
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const dataMenuRef = useRef<HTMLDivElement>(null);
+  const optionsRef = useRef<HTMLDivElement>(null);
   const playbackRef = useRef<Playback | null>(null);
   const stopTimerRef = useRef<number | null>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -135,14 +149,17 @@ export default function App() {
 
   useEffect(() => () => stopPlayback(), [stopPlayback]);
 
-  // データメニューは外側クリックと Esc で閉じる
+  // ヘッダーのドロップダウンは外側クリックと Esc で閉じる
   useEffect(() => {
-    if (!dataMenuOpen) return;
+    if (!dataMenuOpen && !optionsOpen) return;
     const onPointerDown = (e: MouseEvent) => {
       if (!dataMenuRef.current?.contains(e.target as Node)) setDataMenuOpen(false);
+      if (!optionsRef.current?.contains(e.target as Node)) setOptionsOpen(false);
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDataMenuOpen(false);
+      if (e.key !== "Escape") return;
+      setDataMenuOpen(false);
+      setOptionsOpen(false);
     };
     document.addEventListener("mousedown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
@@ -150,7 +167,17 @@ export default function App() {
       document.removeEventListener("mousedown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [dataMenuOpen]);
+  }, [dataMenuOpen, optionsOpen]);
+
+  // ダイアログが開いている間の Esc は、そちらを閉じるほうに使う
+  useEffect(() => {
+    if (!helpOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setHelpOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [helpOpen]);
 
   /** パラメータだけを初期値に戻す。ノートには触らない */
   const resetParams = () => {
@@ -315,6 +342,8 @@ export default function App() {
     <div style={S.container}>
       {toast && <div style={S.toast(toast.ok)}>{toast.message}</div>}
 
+      {helpOpen && <ShortcutsDialog onClose={() => setHelpOpen(false)} />}
+
       {confirm && (
         <div style={S.overlay} onClick={() => setConfirm(null)}>
           <div style={S.modal} onClick={(e) => e.stopPropagation()}>
@@ -438,15 +467,54 @@ export default function App() {
             </div>
           )}
         </div>
+
+        <div ref={optionsRef} style={{ position: "relative" }}>
+          <button
+            style={{ ...S.labeledButton, padding: "6px 8px" }}
+            onClick={() => setOptionsOpen((open) => !open)}
+            title="表示の設定と操作方法"
+          >
+            <Settings size={15} />
+          </button>
+          {optionsOpen && (
+            <div style={S.menu}>
+              <label
+                className="menu-item"
+                style={{ ...S.menuItem, cursor: hasSharpNote ? "default" : "pointer" }}
+                title={hasSharpNote ? "♯のノートがあるため常に表示します" : "半音（黒鍵）の行を表示する"}
+              >
+                <input
+                  type="checkbox"
+                  checked={showSharps || hasSharpNote}
+                  disabled={hasSharpNote}
+                  onChange={(e) => setShowSharps(e.target.checked)}
+                />
+                ♯（黒鍵）の行を表示
+              </label>
+              <button
+                className="menu-item"
+                style={S.menuItem}
+                onClick={() => {
+                  setHelpOpen(true);
+                  setOptionsOpen(false);
+                }}
+              >
+                <CircleHelp size={14} /> 操作とショートカット
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
-      <PianoRoll playback={playback} />
+      <PianoRoll playback={playback} dialogOpen={helpOpen}>
+        <Waveform playback={playback} />
+      </PianoRoll>
 
       <div style={S.row}>
         <button style={S.button} onClick={() => (isPlaying ? stopPlayback() : void playCurrent())}>
           {isPlaying ? <Square size={16} /> : <Play size={16} />} {isPlaying ? "STOP" : "PLAY"}
         </button>
-        <div style={{ display: "flex", gap: 4 }}>
+        <div style={{ display: "flex", gap: 8 }}>
           <button style={S.iconButton} onClick={() => { useStore.getState().undo(); void playCurrent(); }} disabled={past.length === 0} title="元に戻す (Ctrl+Z)">
             <Undo2 size={18} />
           </button>
@@ -494,18 +562,34 @@ export default function App() {
       </div>
 
       <div style={S.row}>
-        {SAMPLE_KINDS.map((kind) => (
-          <button key={kind} style={S.chip} onClick={() => handleSample(kind)}>
-            {kind}
-          </button>
-        ))}
-        <button style={{ ...S.chip, borderColor: S.color.accent, color: S.color.accent }} onClick={() => handleSample("random")}>
-          <Shuffle size={12} /> random
+        <button
+          style={{ ...S.chip, ...(samplesOpen ? { borderColor: S.color.accent, color: S.color.accent } : null) }}
+          onClick={() => setSamplesOpen(!samplesOpen)}
+          title="カテゴリ別のサンプルを作るボタンを出す"
+        >
+          <Sparkles size={12} /> サンプルプリセット
+          <ChevronDown size={12} style={{ transform: samplesOpen ? "rotate(180deg)" : undefined }} />
         </button>
         <button style={S.chip} onClick={resetParams} title="パラメータだけを初期値に戻す（ノートは残る）">
           <RotateCcw size={12} /> reset
         </button>
       </div>
+
+      {samplesOpen && (
+        <div style={{ ...S.row, marginTop: -4 }}>
+          {SAMPLE_KINDS.map((kind) => (
+            <button key={kind} style={S.chip} onClick={() => handleSample(kind)}>
+              {kind}
+            </button>
+          ))}
+          <button
+            style={{ ...S.chip, borderColor: S.color.accent, color: S.color.accent }}
+            onClick={() => handleSample("random")}
+          >
+            <Shuffle size={12} /> random
+          </button>
+        </div>
+      )}
 
       <Params onStart={beginEdit} onEnd={endEdit} />
     </div>

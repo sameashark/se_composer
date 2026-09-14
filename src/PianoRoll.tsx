@@ -1,11 +1,10 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CircleHelp, X } from "lucide-react";
 import { useStore } from "./store";
 import { newNoteId } from "./randomize";
 import { peekContext } from "./audio/player";
 import { normalizePreset } from "./core/engine.js";
 import type { SeNote } from "./core/engine.js";
-import { color, modal, overlay } from "./ui/styles";
+import { useUiSetting } from "./ui/settings";
 
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const LOW_OCTAVE = 2;
@@ -26,12 +25,13 @@ const ALL_PITCHES: string[] = (() => {
 const isBlackKey = (pitch: string) => pitch.includes("#");
 const WHITE_PITCHES = ALL_PITCHES.filter((p) => !isBlackKey(p));
 
-const STEPS = 32; // 16分音符32個 = 2小節
+export const STEPS = 32; // 16分音符32個 = 2小節
 const CELL_W = 28;
 const ROW_H = 14;
-const KEY_W = 46;
-const VIEW_H = 400;
-const CANVAS_W = STEPS * CELL_W;
+export const KEY_W = 46;
+// 波形表示に場所を渡すために 400 から縮めた。白鍵だけなら3オクターブぶんが一度に見える
+const VIEW_H = 300;
+export const CANVAS_W = STEPS * CELL_W;
 
 /** この距離を超えるまでドラッグと見なさない。クリック＝配置と範囲選択を分ける */
 const DRAG_THRESHOLD = 3;
@@ -106,38 +106,6 @@ type Gesture =
   | { kind: "marquee"; x0: number; y0: number; x1: number; y1: number }
   | { kind: "move"; step0: number; row0: number; dStep: number; dRow: number };
 
-const SHORTCUTS: { title: string; rows: [string, string][] }[] = [
-  {
-    title: "マウス",
-    rows: [
-      ["クリック", "ノートを置く"],
-      ["空白をドラッグ", "範囲選択"],
-      ["選択をドラッグ", "選択したノートをまとめて移動"],
-      ["ノートをドラッグ", "長さを変える"],
-      ["ホイール", "強さ（velocity）を変える"],
-      ["右クリック", "ノートなら削除、空白なら選択解除"],
-    ],
-  },
-  {
-    title: "キーボード",
-    rows: [
-      ["Ctrl + C / X / V", "コピー / 切り取り / カーソル位置に貼り付け"],
-      ["Delete", "選択したノートを削除"],
-      ["Esc", "選択解除"],
-      ["Space", "再生"],
-      ["Ctrl + Z / Y", "元に戻す / やり直す"],
-    ],
-  },
-  {
-    title: "タッチ",
-    rows: [
-      ["タップ", "ノートを置く"],
-      ["ダブルタップ", "ノートを削除"],
-      ["ドラッグ", "長さを変える"],
-    ],
-  },
-];
-
 /** 再生中の区間（AudioContext の currentTime 基準） */
 export interface PlaybackRange {
   startAt: number;
@@ -146,9 +114,14 @@ export interface PlaybackRange {
 
 interface PianoRollProps {
   playback: PlaybackRange | null;
+  /** ダイアログが開いている間はショートカットを止める */
+  dialogOpen: boolean;
+  /** グリッドの真下、ステータス行より上に置くもの（波形表示）。
+   *  間に文字が挟まると時間軸を共有している感じが消えるので、ここに差し込む */
+  children?: React.ReactNode;
 }
 
-export const PianoRoll: React.FC<PianoRollProps> = ({ playback }) => {
+export const PianoRoll: React.FC<PianoRollProps> = ({ playback, dialogOpen, children }) => {
   const notes = useStore((s) => s.notes);
   const bpm = useStore((s) => s.params.bpm);
   const addNote = useStore((s) => s.addNote);
@@ -167,8 +140,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({ playback }) => {
   const [gesture, setGesture] = useState<Gesture | null>(null);
   const [selection, setSelection] = useState<Set<string>>(() => new Set());
   const [hoverId, setHoverId] = useState<string | null>(null);
-  const [showSharps, setShowSharps] = useState(false);
-  const [helpOpen, setHelpOpen] = useState(false);
+  const [showSharps] = useUiSetting("sharps");
   const lastTapRef = useRef(0);
   const lockRef = useRef(false);
 
@@ -415,10 +387,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({ playback }) => {
       const meta = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
 
-      if (helpOpen) {
-        if (key === "escape") setHelpOpen(false);
-        return;
-      }
+      if (dialogOpen) return;
 
       if (meta && (key === "c" || key === "x")) {
         const picked = notesRef.current.filter((n) => selectionRef.current.has(n.id));
@@ -444,7 +413,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({ playback }) => {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [cutNotes, deleteSelected, helpOpen, paste, pushHistory]);
+  }, [cutNotes, deleteSelected, dialogOpen, paste, pushHistory]);
 
   useEffect(() => {
     const ctx = canvasRef.current?.getContext("2d");
@@ -587,67 +556,6 @@ export const PianoRoll: React.FC<PianoRollProps> = ({ playback }) => {
 
   return (
     <div>
-      {helpOpen && (
-        <div style={overlay} onClick={() => setHelpOpen(false)}>
-          <div
-            style={{ ...modal, textAlign: "left", maxWidth: 560, width: "90%", maxHeight: "80vh", overflowY: "auto" }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-              <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1 }}>操作とショートカット</span>
-              <button
-                onClick={() => setHelpOpen(false)}
-                title="閉じる (Esc)"
-                style={{
-                  display: "inline-flex",
-                  background: "transparent",
-                  color: color.muted,
-                  border: "none",
-                  padding: 0,
-                  cursor: "pointer",
-                }}
-              >
-                <X size={16} />
-              </button>
-            </div>
-            {SHORTCUTS.map((group) => (
-              <div key={group.title} style={{ marginBottom: 14 }}>
-                <div
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    letterSpacing: 1.5,
-                    color: color.accent,
-                    marginBottom: 4,
-                  }}
-                >
-                  {group.title}
-                </div>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                  <tbody>
-                    {group.rows.map(([keys, description]) => (
-                      <tr key={keys}>
-                        <td
-                          style={{
-                            width: 1,
-                            whiteSpace: "nowrap",
-                            verticalAlign: "top",
-                            padding: "3px 14px 3px 0",
-                          }}
-                        >
-                          {keys}
-                        </td>
-                        <td style={{ padding: "3px 0", color: color.muted }}>{description}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       <div
         ref={scrollRef}
         style={{
@@ -657,7 +565,9 @@ export const PianoRoll: React.FC<PianoRollProps> = ({ playback }) => {
           alignItems: "flex-start",
           maxHeight: VIEW_H,
           overflowY: "auto",
-          overflowX: "auto",
+          // 横は container の minWidth で必ず収まる。ここで auto にすると
+          // 狭い画面でピアノロールだけが動いて波形と時間軸がずれる
+          overflowX: "hidden",
           background: "#0f172a",
           borderRadius: 8,
           border: "1px solid #334155",
@@ -787,72 +697,28 @@ export const PianoRoll: React.FC<PianoRollProps> = ({ playback }) => {
         </div>
       </div>
 
+      {children}
+
       <div
         style={{
           display: "flex",
           alignItems: "center",
-          justifyContent: "space-between",
+          justifyContent: "flex-end",
           flexWrap: "wrap",
           gap: 12,
           fontSize: 10,
           color: "#64748b",
-          padding: "6px 2px",
+          padding: "4px 2px",
+          // 中身の有無で高さが変わると、下のボタン群やパラメータがその都度ずれる
+          minHeight: 20,
+          boxSizing: "border-box",
         }}
       >
-        <button
-          onClick={() => setHelpOpen(true)}
-          title="操作とショートカットの一覧"
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 4,
-            background: "transparent",
-            color: "#64748b",
-            border: "none",
-            padding: 0,
-            fontSize: 10,
-            cursor: "pointer",
-          }}
-        >
-          <CircleHelp size={13} /> 操作方法
-        </button>
-        <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          {selection.size > 0 && (
-            <button
-              onClick={() => setSelection(new Set())}
-              title="選択を解除する (Esc)"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 4,
-                background: "transparent",
-                color: "#f8fafc",
-                border: "1px solid #334155",
-                borderRadius: 999,
-                padding: "1px 8px",
-                fontSize: 10,
-                cursor: "pointer",
-              }}
-            >
-              選択 {selection.size} 件 ✕
-            </button>
-          )}
-          {outOfRange.length > 0 && (
-            <span style={{ color: "#f59e0b" }}>表示範囲外 {outOfRange.length} 件</span>
-          )}
-          <label
-            style={{ display: "flex", alignItems: "center", gap: 4, cursor: hasSharpNote ? "default" : "pointer" }}
-            title={hasSharpNote ? "♯のノートがあるため常に表示します" : "半音（黒鍵）の行を表示する"}
-          >
-            <input
-              type="checkbox"
-              checked={sharpsVisible}
-              disabled={hasSharpNote}
-              onChange={(e) => setShowSharps(e.target.checked)}
-            />
-            ♯ を表示
-          </label>
-        </span>
+        {/* 見えないノートがあることは canvas からは分からないので、ここだけは出す。
+            選択件数は選択中のノートが白枠になるので出さない（出し入れで下がずれる） */}
+        {outOfRange.length > 0 && (
+          <span style={{ color: "#f59e0b" }}>表示範囲外 {outOfRange.length} 件</span>
+        )}
       </div>
     </div>
   );

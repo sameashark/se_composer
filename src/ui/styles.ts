@@ -173,6 +173,40 @@ export const input: CSSProperties = {
   outline: "none",
 };
 
+/**
+ * プリセット名の欄。「戻す」ボタンを内側に重ねるため、幅はここで固定する。
+ * ボタンを隣に並べると、出入りのたびに右のボタン群が横に動く
+ */
+export const nameField: CSSProperties = { position: "relative", width: 172, display: "inline-flex" };
+
+export const nameInput: CSSProperties = {
+  ...input,
+  width: "100%",
+  boxSizing: "border-box",
+  // ボタンの有無で文字の折り返し位置が変わらないよう、右の余白は常に空けておく
+  paddingRight: 28,
+};
+
+/** 保存済みプリセットと中身が食い違っている名前欄。SAVE すると上書きになる合図 */
+export const nameInputDirty: CSSProperties = {
+  ...nameInput,
+  background: "rgba(245, 158, 11, 0.18)",
+  borderColor: color.warn,
+};
+
+export const revertButton: CSSProperties = {
+  position: "absolute",
+  right: 5,
+  top: "50%",
+  transform: "translateY(-50%)",
+  display: "inline-flex",
+  background: "transparent",
+  border: "none",
+  color: color.warn,
+  cursor: "pointer",
+  padding: 2,
+};
+
 export const select: CSSProperties = { ...input, cursor: "pointer" };
 
 export const sectionGrid: CSSProperties = {

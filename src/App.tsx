@@ -31,12 +31,23 @@ import { downloadBlob, play, renderWav } from "./audio/player";
 import type { Playback } from "./audio/player";
 import { mergePresets, parsePresetFile } from "./presetFile";
 import type { ParsedPresetFile } from "./presetFile";
+import { timeToStep } from "./core/engine.js";
 import type { SeNote, SeParams } from "./core/engine.js";
 import { makeSample, SAMPLE_KINDS } from "./randomize";
 import { DEFAULT_PARAMS, useStore } from "./store";
 import type { StoredPreset } from "./store";
 import { useUiSetting } from "./ui/settings";
 import * as S from "./ui/styles";
+
+/**
+ * 「保存済みプリセットと同じ中身か」を比べるための文字列。
+ * id と time の表記ゆれは読み込み経路で変わるので、比較から外す
+ */
+const presetSignature = (params: SeParams, notes: SeNote[]) =>
+  JSON.stringify([
+    (Object.keys(DEFAULT_PARAMS) as (keyof SeParams)[]).map((k) => params[k]),
+    notes.map((n) => `${timeToStep(n.time)}|${n.pitch}|${n.width}|${n.velocity}`).sort(),
+  ]);
 
 interface Confirm {
   message: string;
@@ -54,7 +65,15 @@ export default function App() {
   const oscillatorLocked = useStore((s) => s.lockedParams.includes("oscillatorType"));
   const bpmLocked = useStore((s) => s.lockedParams.includes("bpm"));
 
-  const [presetName, setPresetName] = useState("");
+  const presetName = useStore((s) => s.presetName);
+  const setPresetName = useStore((s) => s.setPresetName);
+  // 同名の保存済みプリセットと中身が違う＝SAVE すると上書きになる状態。
+  // 編集フラグにしないのは、数値欄の onFocus でも beginEdit が走るため
+  const basePreset = presets.find((p) => p.name === presetName.trim());
+  const dirty =
+    !!basePreset &&
+    presetSignature(params, notes) !==
+      presetSignature({ ...DEFAULT_PARAMS, ...basePreset.params }, basePreset.notes);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [toast, setToast] = useState<{ message: string; ok: boolean } | null>(null);
@@ -109,7 +128,6 @@ export default function App() {
 
   const beginEdit = useCallback(() => {
     useStore.getState().pushHistory();
-    setPresetName("");
   }, []);
 
   const endEdit = useCallback(() => {
@@ -184,7 +202,6 @@ export default function App() {
   /** パラメータだけを初期値に戻す。ノートには触らない */
   const resetParams = () => {
     applySnapshot({ ...DEFAULT_PARAMS });
-    setPresetName("");
     notify("パラメータを初期値に戻しました");
   };
 
@@ -192,7 +209,6 @@ export default function App() {
     const { params: nextParams, note } = makeSample(kind);
     const store = useStore.getState();
     applySnapshot(nextParams, store.notes.length === 0 ? [note] : store.notes);
-    setPresetName("");
   };
 
   const handleDownload = async () => {
@@ -216,10 +232,24 @@ export default function App() {
       return;
     }
     const store = useStore.getState();
-    const overwrite = store.presets.some((p) => p.name === name);
-    const next: StoredPreset = { version: 1, name, params: { ...params }, notes: notes.map((n) => ({ ...n })) };
-    store.setPresets([next, ...store.presets.filter((p) => p.name !== name)]);
-    notify(overwrite ? `上書き保存: ${name}` : `保存: ${name}`);
+    const write = () => {
+      const next: StoredPreset = { version: 1, name, params: { ...params }, notes: notes.map((n) => ({ ...n })) };
+      store.setPresets([next, ...store.presets.filter((p) => p.name !== name)]);
+      setPresetName(name);
+    };
+    if (!store.presets.some((p) => p.name === name)) {
+      write();
+      notify(`保存: ${name}`);
+      return;
+    }
+    setConfirm({
+      message: `"${name}" を上書き保存しますか？`,
+      onConfirm: () => {
+        write();
+        notify(`上書き保存: ${name}`);
+        setConfirm(null);
+      },
+    });
   };
 
   const loadPreset = (name: string) => {
@@ -392,13 +422,25 @@ export default function App() {
           ))}
         </select>
 
-        <input
-          type="text"
-          placeholder="プリセット名"
-          value={presetName}
-          onChange={(e) => setPresetName(e.target.value)}
-          style={{ ...S.input, width: 150 }}
-        />
+        <div style={S.nameField}>
+          <input
+            type="text"
+            placeholder="プリセット名"
+            value={presetName}
+            onChange={(e) => setPresetName(e.target.value)}
+            title={dirty ? "保存済みの内容と違います。SAVE で上書きになります" : undefined}
+            style={dirty ? S.nameInputDirty : S.nameInput}
+          />
+          {dirty && basePreset && (
+            <button
+              style={S.revertButton}
+              onClick={() => loadPreset(basePreset.name)}
+              title={`"${basePreset.name}" の保存済みの内容に戻す`}
+            >
+              <RotateCcw size={13} />
+            </button>
+          )}
+        </div>
         <button style={{ ...S.button, padding: "8px 12px", fontSize: 11 }} onClick={savePreset}>
           <Save size={13} /> SAVE
         </button>

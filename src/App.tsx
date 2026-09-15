@@ -36,7 +36,7 @@ import type { ParsedPresetFile } from "./presetFile";
 import { timeToStep } from "./core/engine.js";
 import type { SeNote, SeParams } from "./core/engine.js";
 import { makeSample, SAMPLE_KINDS } from "./randomize";
-import { DEFAULT_PARAMS, useStore } from "./store";
+import { DEFAULT_PARAMS, presetToJson, useStore } from "./store";
 import type { StoredPreset } from "./store";
 import { useUiSetting } from "./ui/settings";
 import * as S from "./ui/styles";
@@ -337,7 +337,10 @@ export default function App() {
   };
 
   const exportJson = () => {
-    const data = { current: { params, notes, ...exportField(exportSeconds) }, history: presets };
+    const data = {
+      current: { params, notes, ...exportField(exportSeconds) },
+      history: presets.map(presetToJson),
+    };
     downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }), `se_composer_${Date.now()}.json`);
     notify("JSON を書き出しました");
   };

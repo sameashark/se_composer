@@ -27,6 +27,19 @@ interface Snapshot {
 
 const keyOf = (n: SeNote) => `${timeToStep(n.time)}|${n.pitch}`;
 
+/**
+ * 保存・書き出しのときの形。**`normalizePreset` が読める形で書くこと。**
+ * 内部では扱いやすさのため `exportSeconds: number | null` を持っているが、そのまま
+ * 書くと読み戻せない（読む側は `export.seconds` を見る）。指定が無ければ載せない
+ */
+export const presetToJson = (p: StoredPreset) => ({
+  version: p.version,
+  name: p.name,
+  params: p.params,
+  notes: p.notes,
+  ...(p.exportSeconds === null ? null : { export: { seconds: p.exportSeconds } }),
+});
+
 interface SongState extends Snapshot {
   /** 保存済みプリセット（localStorage と同期） */
   presets: StoredPreset[];
@@ -158,7 +171,7 @@ export const useStore = create<SongState>((set, get) => ({
   setPresetName: (presetName) => set({ presetName }),
 
   setPresets: (presets) => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(presets.map(presetToJson)));
     set({ presets });
   },
 

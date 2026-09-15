@@ -19,7 +19,7 @@ npm run dev
 
 ピアノロールにノートを置き、パラメータを動かすと即座に鳴る。`WAV` で書き出し、`SAVE` でブラウザに保存（localStorage）、JSON の入出力で持ち運べる。
 
-各パラメータの錠アイコンを閉じると、`reset` と laser〜random のサンプルボタンでその値が変わらなくなる。気に入った音色や長さを固定したまま他を振り直せる。保存済みプリセットを選ぶと全部解除される。
+各パラメータの錠アイコンを閉じると、`reset` と `サンプルプリセット` のボタンでその値が変わらなくなる。気に入った音色や長さを固定したまま他を振り直せる。保存済みプリセットを選ぶと全部解除される。
 
 ピアノロールは空白をドラッグで範囲選択、選択をドラッグでまとめて移動、`Ctrl+C` / `X` / `V` と `Delete` が使える。操作の一覧はヘッダー右端の歯車から開ける。すぐ下に波形が出て、パラメータを変えるたびに描き直す（リミッターに当たっている区間は赤くなる）。作業中の音は自動保存され、リロードしても残る。
 
@@ -55,7 +55,7 @@ node cli/render.mjs '{"params":{"oscillatorType":"square","pitchAmount":24},"not
 
 プリセットJSONをプロジェクト側に置き、WAVはそこから生成する。
 
-`sounds/*.json` を資産としてコミットしておけば、WAVは何度でも作り直せる。UIで微調整したものは `JSON` ボタンで単体プリセットとして書き出せるので、そのまま `sounds/` に戻せる。
+`sounds/*.json` を資産としてコミットしておけば、WAVは何度でも作り直せる。UIで微調整したものは `データ▼` → `この音の書き出し` で単体プリセットとして書き出せるので、そのまま `sounds/` に戻せる。
 
 ### Claude Code から
 
@@ -113,10 +113,11 @@ node cli/render.mjs '{"params":{"oscillatorType":"square","pitchAmount":24},"not
 
 ```
 src/core/engine.js    音源コア（UIとCLIの唯一の実装）
-src/core/wav.js       WAVエンコード・トリム・正規化・波形統計
+src/core/wav.js       WAVエンコード・トリム・尺揃え・正規化・波形統計
 src/audio/player.ts   ブラウザ再生とオフラインレンダリング
 src/store.ts          状態（zustand）とundo/redo、localStorage
 src/PianoRoll.tsx     C2〜C7 の61鍵 × 32ステップ
+src/Waveform.tsx      波形表示（パラメータ変更ごとに描き直す）
 src/randomize.ts      カテゴリ別のランダム生成
 cli/render.mjs        CLI
 presets/*.json        プリセット実例

@@ -14,9 +14,11 @@ export interface UiSettings {
   samples: boolean;
   /** 半音（黒鍵）の行を出しているか */
   sharps: boolean;
+  /** 尺を揃えた素材としてループ再生するか */
+  loop: boolean;
 }
 
-const DEFAULTS: UiSettings = { samples: false, sharps: false };
+const DEFAULTS: UiSettings = { samples: false, sharps: false, loop: false };
 
 function read(): UiSettings {
   try {
@@ -25,6 +27,7 @@ function read(): UiSettings {
     return {
       samples: typeof raw.samples === "boolean" ? raw.samples : DEFAULTS.samples,
       sharps: typeof raw.sharps === "boolean" ? raw.sharps : DEFAULTS.sharps,
+      loop: typeof raw.loop === "boolean" ? raw.loop : DEFAULTS.loop,
     };
   } catch {
     return { ...DEFAULTS };

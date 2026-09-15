@@ -38,6 +38,8 @@ export interface Preset {
   name?: string;
   params: SeParams;
   notes: SeNote[];
+  /** 書き出しの尺。ループ素材のように長さを揃えたいときだけ使う */
+  export?: { seconds: number };
 }
 
 export declare const DEFAULT_PARAMS: SeParams;
@@ -50,6 +52,8 @@ export declare function timeToStep(time: string | number): number;
 export declare function normalizePreset(input: unknown): {
   params: SeParams;
   notes: SeNote[];
+  /** 書き出しの尺（秒）。指定が無ければ null で、音が終わるまでを書き出す */
+  exportSeconds: number | null;
   /** pitch が無い・不正で読み飛ばしたノートの数 */
   skipped: number;
 };

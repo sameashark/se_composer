@@ -1,6 +1,6 @@
 import { estimateDuration, schedule } from "../core/engine.js";
 import type { SeNote, SeParams } from "../core/engine.js";
-import { analyze, encodeWav, normalize, toChannels, trimTail } from "../core/wav.js";
+import { analyze, encodeWav, fitLength, normalize, toChannels, trimTail } from "../core/wav.js";
 import type { WaveStats } from "../core/wav.js";
 
 const SAMPLE_RATE = 44100;
@@ -37,8 +37,10 @@ export interface Playback {
   startAt: number;
   /** 鳴り終わる時刻（AudioContext の currentTime 基準） */
   endTime: number;
-  /** 呼び出し時点から鳴り終わるまでのミリ秒 */
+  /** 呼び出し時点から鳴り終わるまでのミリ秒。ループ再生では Infinity */
   durationMs: number;
+  /** ループ再生ならその周期（秒）。再生カーソルはこれで折り返す */
+  loopSeconds?: number;
 }
 
 /**
@@ -71,9 +73,76 @@ export async function play(params: SeParams, notes: SeNote[]): Promise<Playback>
   return { stop, startAt, endTime, durationMs: Math.max(0, (endTime - ctx.currentTime) * 1000) };
 }
 
+/**
+ * 尺を揃えた素材を鳴らす。**通常の再生（`play`）とは鳴らすものが違う。**
+ * `play` は今作っている音をそのまま鳴らすが、こちらは書き出しと同じ経路（レンダリング →
+ * `fitLength`）を通したものを鳴らす。尺を指定している時点で「尺の中が作品」なので、
+ * 単発でもそちらを聞かせる。はみ出しは波形の表示で分かる。
+ *
+ * ループでは特に、切っていない音を重ねるとはみ出た余韻が次の周にかぶって
+ * 「押し出しループ」になり、実際に書き出される素材の確認にならない。
+ */
+export async function playFixed(
+  params: SeParams,
+  notes: SeNote[],
+  seconds: number,
+  loop: boolean
+): Promise<Playback> {
+  const ctx = await getContext();
+  const offline = new OfflineAudioContext(
+    1,
+    Math.ceil(SAMPLE_RATE * Math.max(estimateDuration(params, notes), seconds)),
+    SAMPLE_RATE
+  );
+  schedule(offline, params, notes, offline.destination, 0);
+  const channels = fitLength(
+    trimTail(toChannels(await offline.startRendering()), SAMPLE_RATE),
+    SAMPLE_RATE,
+    seconds
+  );
+
+  const buffer = ctx.createBuffer(1, channels[0].length, SAMPLE_RATE);
+  buffer.getChannelData(0).set(channels[0]);
+
+  const gate = ctx.createGain();
+  gate.connect(ctx.destination);
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.loop = loop;
+  source.connect(gate);
+
+  const startAt = ctx.currentTime + 0.03;
+  source.start(startAt);
+
+  let stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    const now = ctx.currentTime;
+    gate.gain.setValueAtTime(gate.gain.value, now);
+    gate.gain.linearRampToValueAtTime(0, now + 0.05);
+    setTimeout(() => {
+      source.stop();
+      gate.disconnect();
+    }, 120);
+  };
+
+  // ループは止めるまで鳴り続ける。App 側は durationMs が有限かどうかで停止タイマーを張る
+  const endTime = loop ? Infinity : startAt + seconds;
+  return {
+    stop,
+    startAt,
+    endTime,
+    durationMs: loop ? Infinity : Math.max(0, (endTime - ctx.currentTime) * 1000),
+    loopSeconds: loop ? seconds : undefined,
+  };
+}
+
 export interface RenderOptions {
   trim?: boolean;
   normalizeDb?: number | null;
+  /** 指定するとこの長さちょうどに揃える（ループ素材向け）。null なら音が終わるまで */
+  seconds?: number | null;
 }
 
 export interface RenderResult {
@@ -85,15 +154,18 @@ export interface RenderResult {
 export async function renderWav(
   params: SeParams,
   notes: SeNote[],
-  { trim = true, normalizeDb = null }: RenderOptions = {}
+  { trim = true, normalizeDb = null, seconds = null }: RenderOptions = {}
 ): Promise<RenderResult> {
-  const duration = estimateDuration(params, notes);
+  // 尺を指定するときは、その長さより短く見積もると音が足りなくなる
+  const duration = Math.max(estimateDuration(params, notes), seconds ?? 0);
   const ctx = new OfflineAudioContext(1, Math.ceil(SAMPLE_RATE * duration), SAMPLE_RATE);
   schedule(ctx, params, notes, ctx.destination, 0);
 
   let channels = toChannels(await ctx.startRendering());
   if (trim) channels = trimTail(channels, SAMPLE_RATE);
   if (normalizeDb !== null) channels = normalize(channels, normalizeDb);
+  // 尺揃えは最後。normalize より先にやると、切った後のピークで正規化されてしまう
+  if (seconds !== null) channels = fitLength(channels, SAMPLE_RATE, seconds);
 
   return {
     blob: new Blob([encodeWav(channels, SAMPLE_RATE)], { type: "audio/wav" }),

@@ -113,7 +113,11 @@ export function normalizePreset(input) {
   }
   if (!hasNotesField) notes.push({ id: "n0", time: "0:0:0", pitch: "C4", width: 2, velocity: 0.8 });
 
-  return { params, notes, skipped };
+  // 書き出しの尺。譜面でもパラメータでもないので params には混ぜない
+  const rawSeconds = Number(src?.export?.seconds);
+  const exportSeconds = Number.isFinite(rawSeconds) && rawSeconds > 0 ? rawSeconds : null;
+
+  return { params, notes, exportSeconds, skipped };
 }
 
 /** レンダリングに必要な長さ（秒） */

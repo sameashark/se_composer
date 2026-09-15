@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * プリセットJSON -> WAV。
- *   node cli/render.mjs <入力...> [-o out.wav] [-d 出力先] [--play] [--normalize [dB]] [--no-trim] [--json]
+ *   node cli/render.mjs <入力...> [-o out.wav] [-d 出力先] [--play] [--normalize [dB]]
+ *                       [--length 秒] [--no-trim] [--json]
  *
  * 入力にはプリセットJSON、それが入ったディレクトリ、インラインJSON文字列を渡せる。
  * ディレクトリを渡すと中の *.json をまとめて書き出す。
@@ -11,12 +12,12 @@ import { dirname, resolve, basename, extname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { OfflineAudioContext } from "node-web-audio-api";
 import { normalizePreset, estimateDuration, schedule } from "../src/core/engine.js";
-import { toChannels, trimTail, normalize, encodeWav, analyze } from "../src/core/wav.js";
+import { toChannels, trimTail, fitLength, normalize, encodeWav, analyze } from "../src/core/wav.js";
 
 const SAMPLE_RATE = 44100;
 
 function parseArgs(argv) {
-  const opts = { inputs: [], out: null, outDir: null, play: false, json: false, trim: true, normalizeDb: null };
+  const opts = { inputs: [], out: null, outDir: null, play: false, json: false, trim: true, normalizeDb: null, length: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "-o" || a === "--out") opts.out = argv[++i];
@@ -24,6 +25,8 @@ function parseArgs(argv) {
     else if (a === "--play" || a === "-p") opts.play = true;
     else if (a === "--json") opts.json = true;
     else if (a === "--no-trim") opts.trim = false;
+    // 指定した長さちょうどに揃える。プリセットの export.seconds より優先する
+    else if (a === "--length" || a === "-l") opts.length = Number(argv[++i]);
     else if (a === "--normalize" || a === "-n") {
       const next = argv[i + 1];
       opts.normalizeDb = next !== undefined && next !== "" && !Number.isNaN(Number(next)) ? Number(argv[++i]) : -1;
@@ -67,17 +70,22 @@ const play = (file) =>
   ).status === 0;
 
 async function renderOne(item, outPath, opts) {
-  const { params, notes, skipped } = normalizePreset(loadPreset(item));
+  const { params, notes, exportSeconds, skipped } = normalizePreset(loadPreset(item));
   if (notes.length === 0) {
     throw new Error(`鳴らせるノートがありません${skipped > 0 ? `（pitch が無いノート ${skipped} 件を除外）` : ""}`);
   }
 
-  const ctx = new OfflineAudioContext(1, Math.ceil(SAMPLE_RATE * estimateDuration(params, notes)), SAMPLE_RATE);
+  const length = Number.isFinite(opts.length) && opts.length > 0 ? opts.length : exportSeconds;
+  // 尺を指定するときは、その長さより短く見積もると音が足りなくなる
+  const duration = Math.max(estimateDuration(params, notes), length ?? 0);
+  const ctx = new OfflineAudioContext(1, Math.ceil(SAMPLE_RATE * duration), SAMPLE_RATE);
   schedule(ctx, params, notes, ctx.destination, 0);
 
   let channels = toChannels(await ctx.startRendering());
   if (opts.trim) channels = trimTail(channels, SAMPLE_RATE);
   if (opts.normalizeDb !== null) channels = normalize(channels, opts.normalizeDb);
+  // 尺揃えは最後。normalize より先にやると、切った後のピークで正規化されてしまう
+  if (length) channels = fitLength(channels, SAMPLE_RATE, length);
 
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, Buffer.from(encodeWav(channels, SAMPLE_RATE)));
@@ -104,7 +112,7 @@ async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.inputs.length === 0) {
     console.error(
-      "usage: node cli/render.mjs <preset.json|ディレクトリ|inline json ...> [-o out.wav] [-d 出力先] [--play] [--normalize [dB]] [--no-trim] [--json]"
+      "usage: node cli/render.mjs <preset.json|ディレクトリ|inline json ...> [-o out.wav] [-d 出力先] [--play] [--normalize [dB]] [--length 秒] [--no-trim] [--json]"
     );
     process.exit(1);
   }

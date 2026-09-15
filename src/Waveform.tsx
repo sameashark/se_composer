@@ -33,6 +33,7 @@ interface WaveformProps {
 export const Waveform: React.FC<WaveformProps> = ({ playback }) => {
   const params = useStore((s) => s.params);
   const notes = useStore((s) => s.notes);
+  const exportSeconds = useStore((s) => s.exportSeconds);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const playheadRef = useRef<HTMLDivElement>(null);
@@ -69,9 +70,10 @@ export const Waveform: React.FC<WaveformProps> = ({ playback }) => {
     ctx.fillStyle = "#0b1120";
     ctx.fillRect(0, 0, CANVAS_W, HEIGHT);
 
-    // ピアノロールと同じ位置に小節線を引く。時間軸が一致していることが目で分かる
+    // ピアノロールと同じ位置・同じ色で引く。16分の線まで引くと波形が読めないので
+    // そこだけ省いている（色を変えるのではなく引かない）
     for (let s = 0; s <= STEPS; s += 4) {
-      ctx.strokeStyle = s % 16 === 0 ? "#475569" : "#1e293b";
+      ctx.strokeStyle = s % 16 === 0 ? "#475569" : "#334155";
       ctx.beginPath();
       ctx.moveTo(s * (CANVAS_W / STEPS) + 0.5, 0);
       ctx.lineTo(s * (CANVAS_W / STEPS) + 0.5, HEIGHT);
@@ -84,6 +86,22 @@ export const Waveform: React.FC<WaveformProps> = ({ playback }) => {
     ctx.moveTo(0, mid + 0.5);
     ctx.lineTo(CANVAS_W, mid + 0.5);
     ctx.stroke();
+
+    // 尺を揃えるときは、この線から先が書き出しに入らない
+    if (exportSeconds !== null) {
+      const x = (exportSeconds / windowSec) * CANVAS_W;
+      if (x < CANVAS_W) {
+        ctx.fillStyle = "rgba(2, 6, 23, 0.55)";
+        ctx.fillRect(x, 0, CANVAS_W - x, HEIGHT);
+      }
+      if (x <= CANVAS_W) {
+        ctx.strokeStyle = "#f59e0b";
+        ctx.beginPath();
+        ctx.moveTo(x + 0.5, 0);
+        ctx.lineTo(x + 0.5, HEIGHT);
+        ctx.stroke();
+      }
+    }
 
     if (!peaks || peaks.peakDb === -Infinity) return;
 
@@ -98,7 +116,7 @@ export const Waveform: React.FC<WaveformProps> = ({ playback }) => {
       const bottom = mid - toScale(lo, peak) * mid;
       ctx.fillRect(x, top, 1, Math.max(1, bottom - top));
     }
-  }, [peaks]);
+  }, [peaks, exportSeconds, windowSec]);
 
   // 再生カーソル。ピアノロールと同じ AudioContext の時計で走らせる
   useEffect(() => {
@@ -118,8 +136,11 @@ export const Waveform: React.FC<WaveformProps> = ({ playback }) => {
         hide();
         return;
       }
-      const ratio = (ctx.currentTime - playback.startAt) / windowSec;
-      if (ratio < 0 || ratio > 1) hide();
+      const raw = ctx.currentTime - playback.startAt;
+      // ループ中は周期で折り返す
+      const elapsed = playback.loopSeconds ? raw % playback.loopSeconds : raw;
+      const ratio = elapsed / windowSec;
+      if (raw < 0 || ratio > 1) hide();
       else {
         el.style.display = "block";
         el.style.transform = `translateX(${ratio * CANVAS_W}px)`;
@@ -134,7 +155,8 @@ export const Waveform: React.FC<WaveformProps> = ({ playback }) => {
     };
   }, [playback, windowSec]);
 
-  const overflow = peaks !== null && peaks.seconds > windowSec;
+  const limit = exportSeconds ?? windowSec;
+  const overflow = peaks !== null && peaks.seconds > limit + 0.001;
 
   return (
     // 横スクロールは持たせない。ピアノロールと別々にスクロールすると時間軸がずれる。
@@ -209,7 +231,11 @@ export const Waveform: React.FC<WaveformProps> = ({ playback }) => {
               borderRadius: 4,
               padding: "1px 4px",
             }}
-            title={`音の長さ ${peaks.seconds.toFixed(2)}s。グリッド（${windowSec.toFixed(2)}s）を超えた分は表示されていない`}
+            title={
+              exportSeconds !== null
+                ? `音の長さ ${peaks.seconds.toFixed(2)}s。指定の ${exportSeconds.toFixed(2)}s を超えた分は書き出しで切られる`
+                : `音の長さ ${peaks.seconds.toFixed(2)}s。グリッド（${windowSec.toFixed(2)}s）を超えた分は表示されていない`
+            }
           >
             はみ出し ▶
           </span>

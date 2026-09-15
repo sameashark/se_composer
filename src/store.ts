@@ -14,11 +14,15 @@ export interface StoredPreset {
   name: string;
   params: SeParams;
   notes: SeNote[];
+  /** 書き出しの尺（秒）。null なら音が終わるまで */
+  exportSeconds: number | null;
 }
 
 interface Snapshot {
   params: SeParams;
   notes: SeNote[];
+  /** 書き出しの尺（秒）。ループ素材のように長さを揃えたいときだけ使う。null で従来どおり */
+  exportSeconds: number | null;
 }
 
 const keyOf = (n: SeNote) => `${timeToStep(n.time)}|${n.pitch}`;
@@ -44,6 +48,7 @@ interface SongState extends Snapshot {
   removeNote: (id: string) => void;
   clearNotes: () => void;
   setNotes: (notes: SeNote[]) => void;
+  setExportSeconds: (seconds: number | null) => void;
   cutNotes: (removed: SeNote[], remaining: SeNote[]) => void;
 
   setPresetName: (name: string) => void;
@@ -62,8 +67,8 @@ function readStoredPresets(): StoredPreset[] {
     return raw
       .filter((p): p is StoredPreset => !!p && typeof p.name === "string")
       .map((p) => {
-        const { params, notes } = normalizePreset(p);
-        return { version: 1, name: p.name, params, notes };
+        const { params, notes, exportSeconds } = normalizePreset(p);
+        return { version: 1, name: p.name, params, notes, exportSeconds };
       });
   } catch {
     return [];
@@ -72,17 +77,22 @@ function readStoredPresets(): StoredPreset[] {
 
 /** 前回の作業内容。リロードで作業が消えるのを防ぐだけの用途なので、壊れていたら黙って捨てる */
 function readCurrent(): Snapshot & { presetName: string } {
-  const empty = { params: { ...DEFAULT_PARAMS }, notes: [], presetName: "" };
+  const empty = { params: { ...DEFAULT_PARAMS }, notes: [], exportSeconds: null, presetName: "" };
   try {
     const raw = JSON.parse(localStorage.getItem(CURRENT_KEY) ?? "null");
     if (!raw) return empty;
-    const { params, notes } = normalizePreset(raw);
+    const { params, notes, exportSeconds } = normalizePreset(raw);
     const presetName = typeof raw.presetName === "string" ? raw.presetName : "";
     // cut は「切って貼る」で一組の操作。貼らずに閉じたぶんは切る前の位置へ戻す
     const pending = Array.isArray(raw.pendingCut) ? normalizePreset({ notes: raw.pendingCut }).notes : [];
-    if (pending.length === 0) return { params, notes, presetName };
+    if (pending.length === 0) return { params, notes, exportSeconds, presetName };
     const taken = new Set(notes.map(keyOf));
-    return { params, notes: [...notes, ...pending.filter((n) => !taken.has(keyOf(n)))], presetName };
+    return {
+      params,
+      notes: [...notes, ...pending.filter((n) => !taken.has(keyOf(n)))],
+      exportSeconds,
+      presetName,
+    };
   } catch {
     return empty;
   }
@@ -91,6 +101,7 @@ function readCurrent(): Snapshot & { presetName: string } {
 const snapshotOf = (s: Snapshot): Snapshot => ({
   params: { ...s.params },
   notes: s.notes.map((n) => ({ ...n })),
+  exportSeconds: s.exportSeconds,
 });
 
 const restored = readCurrent();
@@ -98,6 +109,7 @@ const restored = readCurrent();
 export const useStore = create<SongState>((set, get) => ({
   params: restored.params,
   notes: restored.notes,
+  exportSeconds: restored.exportSeconds,
   presets: readStoredPresets(),
   presetName: restored.presetName,
   lockedParams: [],
@@ -140,6 +152,7 @@ export const useStore = create<SongState>((set, get) => ({
   removeNote: (id) => set((s) => ({ notes: s.notes.filter((n) => n.id !== id), pendingCut: [] })),
   clearNotes: () => set({ notes: [], pendingCut: [] }),
   setNotes: (notes) => set({ notes, pendingCut: [] }),
+  setExportSeconds: (seconds) => set({ exportSeconds: seconds }),
   cutNotes: (removed, remaining) => set({ notes: remaining, pendingCut: removed }),
 
   setPresetName: (presetName) => set({ presetName }),
@@ -149,8 +162,13 @@ export const useStore = create<SongState>((set, get) => ({
     set({ presets });
   },
 
-  loadSnapshot: ({ params, notes }) =>
-    set({ params: { ...DEFAULT_PARAMS, ...params }, notes: notes.map((n) => ({ ...n })), pendingCut: [] }),
+  loadSnapshot: ({ params, notes, exportSeconds }) =>
+    set({
+      params: { ...DEFAULT_PARAMS, ...params },
+      notes: notes.map((n) => ({ ...n })),
+      exportSeconds,
+      pendingCut: [],
+    }),
 
   pushHistory: () => {
     const s = get();
@@ -192,15 +210,26 @@ useStore.subscribe((s, prev) => {
   if (
     s.params === prev.params &&
     s.notes === prev.notes &&
+    s.exportSeconds === prev.exportSeconds &&
     s.pendingCut === prev.pendingCut &&
     s.presetName === prev.presetName
   )
     return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    const { params, notes, pendingCut, presetName } = useStore.getState();
+    const { params, notes, exportSeconds, pendingCut, presetName } = useStore.getState();
     try {
-      localStorage.setItem(CURRENT_KEY, JSON.stringify({ params, notes, pendingCut, presetName }));
+      localStorage.setItem(
+        CURRENT_KEY,
+        JSON.stringify({
+          params,
+          notes,
+          pendingCut,
+          presetName,
+          // プリセットJSONと同じ形で持つ（normalizePreset がそのまま読める）
+          export: exportSeconds === null ? undefined : { seconds: exportSeconds },
+        })
+      );
     } catch {
       // 容量超過などで書けなくても操作は続けられる必要がある
     }

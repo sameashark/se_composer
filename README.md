@@ -43,6 +43,7 @@ node cli/render.mjs '{"params":{"oscillatorType":"square","pitchAmount":24},"not
 | `--play` | 生成後に再生（Windows の SoundPlayer）。複数なら順番に鳴らす |
 | `--normalize [dB]` | ピークを指定dB（既定 -1）に正規化 |
 | `--no-trim` | 末尾の無音を残す（既定はトリムする） |
+| `--length <秒>` | その長さちょうどに揃える。短ければ無音で埋め、はみ出た分は切って末尾をフェードする（ループ素材向け） |
 | `--json` | パラメータと波形統計を JSON で出力 |
 
 入力にはプリセットJSON・それが入ったディレクトリ・インラインJSONを複数並べられる。
@@ -95,6 +96,18 @@ node cli/render.mjs '{"params":{"oscillatorType":"square","pitchAmount":24},"not
 | | `bpm` | `time` と `width` の基準。ディレイ間隔は bpm に追従せず 0.25秒固定 |
 
 `oscillatorType: "noise"` のとき、ピッチ関係（`pitchAmount` `detune` `arpAmount`、`lfoTarget: "pitch"`）は効かない。
+
+### 尺を揃える（ループ素材）
+
+ゲームの中で繰り返し鳴らす音は、音と余韻を含めて厳密に1秒・2秒である必要がある。UI の `尺を揃える` か CLI の `--length` で指定すると、その長さちょうどの WAV が出る（短ければ無音で埋め、はみ出た分は切って末尾を 5ms フェードする）。指定はプリセットJSONにも `export` として保存される。
+
+```json
+{ "name": "clock", "params": { ... }, "notes": [ ... ], "export": { "seconds": 1.0 } }
+```
+
+ピアノロールと波形の指定位置から先は暗くなるので、余韻がはみ出していれば `delayFeedback` や `release` を詰めればよい。
+
+尺を指定している間は、再生も書き出されるものと同じ音（切ってフェードした後）になる。`LOOP` を押すとそれを繰り返して繋ぎ目を確かめられる。
 
 ## 構成
 

@@ -11,12 +11,14 @@ import {
   Music,
   Play,
   Redo2,
+  Repeat,
   RotateCcw,
   Save,
   Settings,
   Shuffle,
   Sparkles,
   Square,
+  Timer,
   Trash2,
   Undo2,
   Waves,
@@ -27,7 +29,7 @@ import { Waveform } from "./Waveform";
 import { LockToggle } from "./components/LockToggle";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { Params, OscillatorSelect } from "./components/Params";
-import { downloadBlob, play, renderWav } from "./audio/player";
+import { downloadBlob, play, playFixed, renderWav } from "./audio/player";
 import type { Playback } from "./audio/player";
 import { mergePresets, parsePresetFile } from "./presetFile";
 import type { ParsedPresetFile } from "./presetFile";
@@ -41,13 +43,18 @@ import * as S from "./ui/styles";
 
 /**
  * 「保存済みプリセットと同じ中身か」を比べるための文字列。
- * id と time の表記ゆれは読み込み経路で変わるので、比較から外す
+ * id と time の表記ゆれは読み込み経路で変わるので、比較から外す。
+ * **保存される項目はすべて入れること。** 漏れると、変えたのに変更ありにならない
  */
-const presetSignature = (params: SeParams, notes: SeNote[]) =>
+const presetSignature = (params: SeParams, notes: SeNote[], exportSeconds: number | null) =>
   JSON.stringify([
     (Object.keys(DEFAULT_PARAMS) as (keyof SeParams)[]).map((k) => params[k]),
     notes.map((n) => `${timeToStep(n.time)}|${n.pitch}|${n.width}|${n.velocity}`).sort(),
+    exportSeconds,
   ]);
+
+/** 尺の指定があるときだけ JSON に載せる。無指定のプリセットに空欄を増やさない */
+const exportField = (seconds: number | null) => (seconds === null ? null : { export: { seconds } });
 
 interface Confirm {
   message: string;
@@ -57,6 +64,7 @@ interface Confirm {
 export default function App() {
   const params = useStore((s) => s.params);
   const notes = useStore((s) => s.notes);
+  const exportSeconds = useStore((s) => s.exportSeconds);
   // ♯のノートがある譜面で行を隠すと編集できなくなるため、その場合は常に表示される
   const hasSharpNote = notes.some((n) => n.pitch.includes("#"));
   const presets = useStore((s) => s.presets);
@@ -72,8 +80,12 @@ export default function App() {
   const basePreset = presets.find((p) => p.name === presetName.trim());
   const dirty =
     !!basePreset &&
-    presetSignature(params, notes) !==
-      presetSignature({ ...DEFAULT_PARAMS, ...basePreset.params }, basePreset.notes);
+    presetSignature(params, notes, exportSeconds) !==
+      presetSignature(
+        { ...DEFAULT_PARAMS, ...basePreset.params },
+        basePreset.notes,
+        basePreset.exportSeconds
+      );
   const [isPlaying, setIsPlaying] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [toast, setToast] = useState<{ message: string; ok: boolean } | null>(null);
@@ -82,6 +94,7 @@ export default function App() {
   const [dataMenuOpen, setDataMenuOpen] = useState(false);
   // 一度開いたら閉じるまで出しっぱなし。毎回使うものではないので既定は閉じている
   const [samplesOpen, setSamplesOpen] = useUiSetting("samples");
+  const [loopEnabled, setLoopEnabled] = useUiSetting("loop");
   const [showSharps, setShowSharps] = useUiSetting("sharps");
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -91,6 +104,8 @@ export default function App() {
   const playbackRef = useRef<Playback | null>(null);
   const stopTimerRef = useRef<number | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  // チェックを外しても秒数を覚えておく。入れ直すたびに 1.0 に戻るのは煩わしい
+  const lastSecondsRef = useRef(1);
 
   const notify = useCallback((message: string, ok = true) => {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
@@ -109,22 +124,27 @@ export default function App() {
   /** 常に store の最新値で鳴らす（スライダー操作直後でも取りこぼさない） */
   const playCurrent = useCallback(async () => {
     stopPlayback();
-    const { params: p, notes: n } = useStore.getState();
+    const { params: p, notes: n, exportSeconds: sec } = useStore.getState();
     if (n.length === 0) return;
     try {
-      const started = await play(p, n);
+      // 尺を指定しているなら、単発でも書き出しと同じ（切ってフェードした）音を鳴らす。
+      // LOOP はそれを繰り返すかどうかの違いだけ
+      const started = sec !== null ? await playFixed(p, n, sec, loopEnabled) : await play(p, n);
       playbackRef.current = started;
       setIsPlaying(true);
-      setPlayback({ startAt: started.startAt, endAt: started.endTime });
-      stopTimerRef.current = window.setTimeout(() => {
-        playbackRef.current = null;
-        setIsPlaying(false);
-        setPlayback(null);
-      }, started.durationMs + 120);
+      setPlayback({ startAt: started.startAt, endAt: started.endTime, loopSeconds: started.loopSeconds });
+      // ループは止めるまで鳴り続けるので、自動停止のタイマーは張らない
+      if (Number.isFinite(started.durationMs)) {
+        stopTimerRef.current = window.setTimeout(() => {
+          playbackRef.current = null;
+          setIsPlaying(false);
+          setPlayback(null);
+        }, started.durationMs + 120);
+      }
     } catch (e) {
       notify("再生できません", false);
     }
-  }, [notify, stopPlayback]);
+  }, [loopEnabled, notify, stopPlayback]);
 
   const beginEdit = useCallback(() => {
     useStore.getState().pushHistory();
@@ -134,12 +154,35 @@ export default function App() {
     void playCurrent();
   }, [playCurrent]);
 
+  /**
+   * 尺を変える。**必ず再生を止める。** 鳴っている音は変更前の尺でレンダリングした
+   * バッファなので、止めずに変えると音とカーソルだけが古い周期のまま回り、
+   * 画面の尺ラインと合わなくなる
+   */
+  const changeExportSeconds = useCallback(
+    (seconds: number | null) => {
+      stopPlayback();
+      if (seconds !== null) lastSecondsRef.current = seconds;
+      useStore.getState().setExportSeconds(seconds);
+    },
+    [stopPlayback]
+  );
+
   const applySnapshot = useCallback(
-    (nextParams: SeParams, nextNotes?: SeNote[], options?: { play?: boolean }) => {
+    (
+      nextParams: SeParams,
+      nextNotes?: SeNote[],
+      options?: { play?: boolean; exportSeconds?: number | null }
+    ) => {
       const store = useStore.getState();
       store.pushHistory();
       store.setParams(nextParams);
       if (nextNotes) store.setNotes(nextNotes);
+      // pushHistory より後に置く。先に設定すると undo で尺だけ戻らない
+      if (options?.exportSeconds !== undefined) {
+        if (options.exportSeconds !== null) lastSecondsRef.current = options.exportSeconds;
+        store.setExportSeconds(options.exportSeconds);
+      }
       if (options?.play !== false) void playCurrent();
     },
     [playCurrent]
@@ -215,7 +258,7 @@ export default function App() {
     if (notes.length === 0) return;
     setIsExporting(true);
     try {
-      const { blob, stats } = await renderWav(params, notes);
+      const { blob, stats } = await renderWav(params, notes, { seconds: exportSeconds });
       downloadBlob(blob, `se_${presetName || Date.now()}.wav`);
       notify(`WAV ${stats.seconds.toFixed(2)}s / peak ${stats.peakDb.toFixed(1)}dB`);
     } catch {
@@ -235,7 +278,13 @@ export default function App() {
     // 新規は末尾（JSON の「リストに追加」と揃える）、上書きは位置を動かさない
     const at = store.presets.findIndex((p) => p.name === name);
     const write = () => {
-      const next: StoredPreset = { version: 1, name, params: { ...params }, notes: notes.map((n) => ({ ...n })) };
+      const next: StoredPreset = {
+        version: 1,
+        name,
+        params: { ...params },
+        notes: notes.map((n) => ({ ...n })),
+        exportSeconds,
+      };
       store.setPresets(
         at < 0 ? [...store.presets, next] : store.presets.map((p, i) => (i === at ? next : p))
       );
@@ -267,7 +316,9 @@ export default function App() {
     // 残すと呼び出した音と画面の値が食い違う
     useStore.getState().clearLocks();
     // 手元のリストを切り替えただけなので通知しない（音が鳴ることが結果になる）
-    applySnapshot({ ...DEFAULT_PARAMS, ...preset.params }, preset.notes.map((n) => ({ ...n })));
+    applySnapshot({ ...DEFAULT_PARAMS, ...preset.params }, preset.notes.map((n) => ({ ...n })), {
+      exportSeconds: preset.exportSeconds,
+    });
     setPresetName(preset.name);
   };
 
@@ -286,7 +337,7 @@ export default function App() {
   };
 
   const exportJson = () => {
-    const data = { current: { params, notes }, history: presets };
+    const data = { current: { params, notes, ...exportField(exportSeconds) }, history: presets };
     downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }), `se_composer_${Date.now()}.json`);
     notify("JSON を書き出しました");
   };
@@ -295,7 +346,9 @@ export default function App() {
   const exportCurrentPreset = () => {
     const name = presetName.trim() || "se";
     downloadBlob(
-      new Blob([JSON.stringify({ name, params, notes }, null, 2)], { type: "application/json" }),
+      new Blob([JSON.stringify({ name, params, notes, ...exportField(exportSeconds) }, null, 2)], {
+        type: "application/json",
+      }),
       `${name}.json`
     );
     notify(`${name}.json を書き出しました`);
@@ -337,7 +390,7 @@ export default function App() {
       if (loaded.length > 0) store.setPresets(loaded);
       if (current) {
         store.clearLocks(); // プリセット選択と同じ扱い
-        applySnapshot(current.params, current.notes, silent);
+        applySnapshot(current.params, current.notes, { ...silent, exportSeconds: current.exportSeconds });
       }
       setPresetName(loaded.length === 1 ? loaded[0].name : "");
       notify(
@@ -562,6 +615,27 @@ export default function App() {
         <button style={S.button} onClick={() => (isPlaying ? stopPlayback() : void playCurrent())}>
           {isPlaying ? <Square size={16} /> : <Play size={16} />} {isPlaying ? "STOP" : "PLAY"}
         </button>
+        <button
+          style={{
+            ...S.iconButton,
+            padding: "6px 8px",
+            gap: 4,
+            fontSize: 11,
+            ...(loopEnabled && exportSeconds !== null ? { color: S.color.accent } : null),
+          }}
+          onClick={() => {
+            stopPlayback();
+            setLoopEnabled(!loopEnabled);
+          }}
+          disabled={exportSeconds === null}
+          title={
+            exportSeconds === null
+              ? "尺を揃えているときだけ使える（書き出しと同じ長さで繰り返す）"
+              : "書き出しと同じ音をループ再生して、繋ぎ目を確かめる"
+          }
+        >
+          <Repeat size={15} /> LOOP
+        </button>
         <div style={{ display: "flex", gap: 8 }}>
           <button style={S.iconButton} onClick={() => { useStore.getState().undo(); void playCurrent(); }} disabled={past.length === 0} title="元に戻す (Ctrl+Z)">
             <Undo2 size={18} />
@@ -606,6 +680,48 @@ export default function App() {
           />
           <span style={{ fontSize: 10, color: S.color.muted }}>BPM</span>
           <LockToggle paramKey="bpm" />
+        </div>
+
+        {/* 尺の指定。ゲームで繰り返し鳴らす素材は、音＋余韻で厳密に N 秒である必要がある */}
+        <div style={S.group}>
+          <Timer size={14} color={S.color.muted} />
+          <label
+            style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: S.color.muted, cursor: "pointer" }}
+            title="書き出しをこの長さちょうどに揃える。短ければ無音で埋め、はみ出た分は切る"
+          >
+            <input
+              type="checkbox"
+              checked={exportSeconds !== null}
+              onChange={(e) => {
+                beginEdit();
+                changeExportSeconds(e.target.checked ? lastSecondsRef.current : null);
+              }}
+            />
+            尺を揃える
+          </label>
+          <input
+            type="number"
+            value={exportSeconds ?? lastSecondsRef.current}
+            min={0.1}
+            max={30}
+            step={0.1}
+            disabled={exportSeconds === null}
+            onFocus={beginEdit}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              if (!Number.isFinite(v) || v <= 0) return;
+              changeExportSeconds(v);
+            }}
+            // 他の数値欄と同じく、確定（鳴らし直し）は Enter に任せる
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                endEdit();
+              }
+            }}
+            style={{ ...S.input, width: 60, opacity: exportSeconds === null ? 0.45 : 1 }}
+          />
+          <span style={{ fontSize: 10, color: S.color.muted }}>秒</span>
         </div>
       </div>
 

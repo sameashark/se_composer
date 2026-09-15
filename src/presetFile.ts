@@ -6,7 +6,7 @@ export interface ParsedPresetFile {
   /** ファイルに入っていたプリセット（名前付きのもの） */
   presets: StoredPreset[];
   /** 現在値として読み込むべき内容。無ければ null */
-  current: { params: SeParams; notes: SeNote[] } | null;
+  current: { params: SeParams; notes: SeNote[]; exportSeconds: number | null } | null;
   /** pitch が無くて読み飛ばしたノートの総数 */
   skipped: number;
 }
@@ -26,8 +26,8 @@ function looksLikePreset(value: unknown): value is { name?: unknown; params: Rec
 }
 
 const toStored = (name: string, source: unknown) => {
-  const { params, notes, skipped } = normalizePreset(source);
-  return { preset: { version: 1, name, params, notes } as StoredPreset, skipped };
+  const { params, notes, exportSeconds, skipped } = normalizePreset(source);
+  return { preset: { version: 1, name, params, notes, exportSeconds } as StoredPreset, skipped };
 };
 
 /**
@@ -40,7 +40,11 @@ export function parsePresetFile(data: unknown): ParsedPresetFile | null {
     const rawName = (data as { name?: unknown }).name;
     const name = typeof rawName === "string" && rawName.trim() ? rawName.trim() : "untitled";
     const { preset, skipped } = toStored(name, data);
-    return { presets: [preset], current: { params: preset.params, notes: preset.notes }, skipped };
+    return {
+      presets: [preset],
+      current: { params: preset.params, notes: preset.notes, exportSeconds: preset.exportSeconds },
+      skipped,
+    };
   }
 
   const rawList = Array.isArray(data) ? data : (data as { history?: unknown })?.history;
@@ -65,7 +69,11 @@ export function parsePresetFile(data: unknown): ParsedPresetFile | null {
   if (looksLikePreset(rawCurrent)) {
     const normalized = normalizePreset(rawCurrent);
     skipped += normalized.skipped;
-    current = { params: normalized.params, notes: normalized.notes };
+    current = {
+      params: normalized.params,
+      notes: normalized.notes,
+      exportSeconds: normalized.exportSeconds,
+    };
   }
 
   // 配列ではあったが中身が1件もプリセットでなければ、無関係なファイルとみなす

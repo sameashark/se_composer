@@ -33,6 +33,26 @@ export function trimTail(channels, sampleRate, { floorDb = -60, tailMs = 50 } = 
   return channels.map((d) => d.subarray(0, end));
 }
 
+/**
+ * 指定の長さちょうどに揃える。ゲームの中で繰り返し鳴らす音は、厳密に1秒・2秒でないと
+ * 使えない。短ければ無音で埋め、長ければ切る。
+ *
+ * 切るときは末尾に短いフェードをかける。波形が途中で途切れたままだとループの繋ぎ目で
+ * プチッと鳴るため。フェードは切ったときだけで、余った無音を埋めただけのときは触らない。
+ */
+export function fitLength(channels, sampleRate, seconds, { fadeMs = 5 } = {}) {
+  const target = Math.max(1, Math.round(seconds * sampleRate));
+  return channels.map((d) => {
+    const out = new Float32Array(target);
+    out.set(d.subarray(0, Math.min(d.length, target)));
+    if (d.length > target) {
+      const fade = Math.min(target, Math.ceil((fadeMs / 1000) * sampleRate));
+      for (let i = 0; i < fade; i++) out[target - fade + i] *= 1 - i / fade;
+    }
+    return out;
+  });
+}
+
 /** ピークを targetDb に揃える */
 export function normalize(channels, targetDb = -1) {
   const peak = peakOf(channels);

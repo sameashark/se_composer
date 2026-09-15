@@ -110,6 +110,8 @@ type Gesture =
 export interface PlaybackRange {
   startAt: number;
   endAt: number;
+  /** ループ再生ならその周期（秒）。カーソルはここで折り返す */
+  loopSeconds?: number;
 }
 
 interface PianoRollProps {
@@ -124,6 +126,7 @@ interface PianoRollProps {
 export const PianoRoll: React.FC<PianoRollProps> = ({ playback, dialogOpen, children }) => {
   const notes = useStore((s) => s.notes);
   const bpm = useStore((s) => s.params.bpm);
+  const exportSeconds = useStore((s) => s.exportSeconds);
   const addNote = useStore((s) => s.addNote);
   const updateNote = useStore((s) => s.updateNote);
   const removeNote = useStore((s) => s.removeNote);
@@ -443,6 +446,22 @@ export const PianoRoll: React.FC<PianoRollProps> = ({ playback, dialogOpen, chil
       ctx.stroke();
     }
 
+    // 尺を揃えるときは、そこから先に置いたノートが素材に入らない
+    if (exportSeconds !== null) {
+      const x = (exportSeconds / (60 / bpm / 4)) * CELL_W;
+      if (x < CANVAS_W) {
+        ctx.fillStyle = "rgba(2, 6, 23, 0.55)";
+        ctx.fillRect(x, 0, CANVAS_W - x, canvasH);
+      }
+      if (x <= CANVAS_W) {
+        ctx.strokeStyle = "#f59e0b";
+        ctx.beginPath();
+        ctx.moveTo(x + 0.5, 0);
+        ctx.lineTo(x + 0.5, canvasH);
+        ctx.stroke();
+      }
+    }
+
     // 移動中は store を触らず、描画側でずらして見せる
     let offset: { dStep: number; dIdx: number } | null = null;
     if (gesture?.kind === "move") {
@@ -485,7 +504,7 @@ export const PianoRoll: React.FC<PianoRollProps> = ({ playback, dialogOpen, chil
       ctx.strokeRect(x + 0.5, y + 0.5, w, h);
       ctx.setLineDash([]);
     }
-  }, [notes, gesture, selection, hoverId, pitches, canvasH, rowOf]);
+  }, [notes, gesture, selection, hoverId, pitches, canvasH, rowOf, exportSeconds, bpm]);
 
   // 再生カーソル。毎フレーム state を更新すると再描画が走るので、DOM を直接動かす
   useEffect(() => {
@@ -507,8 +526,15 @@ export const PianoRoll: React.FC<PianoRollProps> = ({ playback, dialogOpen, chil
         hide();
         return;
       }
-      const elapsed = ctx.currentTime - playback.startAt;
+      const raw = ctx.currentTime - playback.startAt;
+      // ループ中は周期で折り返す
+      const elapsed = playback.loopSeconds ? raw % playback.loopSeconds : raw;
       const step = elapsed / stepSec;
+      if (raw < 0) {
+        hide();
+        raf = requestAnimationFrame(tick);
+        return;
+      }
       if (elapsed < 0 || step > STEPS) hide();
       else {
         el.style.display = "block";
